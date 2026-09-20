@@ -671,7 +671,12 @@ function Combat:UpdateGCD()
     if remaining > 0 then
         pingMs = math.max(0, math.min(GetLatency(), self.gcdDuration))
     end
+    -- Keep the ping zone at its latency-derived width until the GCD
+    -- countdown reaches it. Once the yellow GCD progress reaches the
+    -- latency window, the visible red section continues shrinking with
+    -- the same countdown instead of behaving like its own mini GCD.
     local pingWidth = math.floor((pingMs / math.max(1, self.gcdDuration)) * innerWidth)
+    pingWidth = math.min(pingWidth, progressWidth)
     self.gcdPing:SetDimensions(pingWidth, innerHeight)
 
     local idle = remaining <= 0
