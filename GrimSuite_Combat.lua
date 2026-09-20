@@ -894,11 +894,33 @@ function Combat:OnSlotUsed(_, slotId)
 
     local now = GetFrameTimeMilliseconds()
 
-    -- First prototype uses the standard ESO 1s GCD baseline.
-    -- Cast/channel time is included when it exceeds the GCD.
+    -- GCD baseline is 1s. Cast/channel time is included when it exceeds
+    -- the baseline. Fatecarver also adds 0.3s per Crux consumed (up to 3).
     local boundId = GetSlotBoundId(slotId)
     local _, castTime, channelTime = GetAbilityCastInfo(boundId)
-    local duration = math.max(1000, (castTime or 0) + (channelTime or 0))
+    local baseDuration = math.max(1000, (castTime or 0) + (channelTime or 0))
+
+    -- Crux is a shared player effect tracked by the Action Bar. Read the
+    -- current count at the moment the ability is used, before the consume
+    -- event can remove the stacks. Only Fatecarver consumes Crux for this
+    -- GCD adjustment.
+    local cruxConsumed = 0
+    if boundId and boundId > 0 and GetAbilityName then
+        local ok, name = pcall(GetAbilityName, boundId)
+        if ok and name then
+            name = zo_strlower(tostring(name))
+            if string.find(name, "fatecarver", 1, true) then
+                local crux = 0
+                local tracked = GS.ActionBar and GS.ActionBar.effectStacks
+                if tracked and tracked[184220] then
+                    crux = tonumber(tracked[184220].stack) or 0
+                end
+                cruxConsumed = math.max(0, math.min(3, crux))
+            end
+        end
+    end
+
+    local duration = baseDuration + (cruxConsumed * 300)
 
     if self.weave.previousSkillEnd then
         local delay = now - self.weave.previousSkillEnd
