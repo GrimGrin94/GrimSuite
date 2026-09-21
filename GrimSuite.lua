@@ -2,12 +2,13 @@ GrimSuite = GrimSuite or {}
 local GS = GrimSuite
 
 GS.name = "GrimSuite"
-GS.version = "1.2.1"
+GS.version = "1.3.0-VisualTest2"
 
 GS.SV = {
     gcd = 1000,
     showGCD = true,
     showWeave = true,
+    showWeaveMs = true,
     gcdX = 780,
     gcdY = 500,
     gcdWidth = 360,

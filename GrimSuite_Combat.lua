@@ -38,7 +38,7 @@ Combat.weave = {
     averageSum = 0,
     averageCount = 0,
     averagePending = {},
-    averageMax = 25,
+    averageMax = 150,
     laTimeout = 1000,
     laGraceMs = 75,
     lastLAConfirmed = nil,
@@ -566,64 +566,69 @@ function Combat:CreateGCD()
         GS.Saved.gcdX = math.floor(c:GetLeft() + 0.5)
         GS.Saved.gcdY = math.floor(c:GetTop() + 0.5)
     end)
+
+    -- Visual rebuild: a compact dark/glass track with a crisp outer frame.
+    -- The underlying GCD/ping timing logic is intentionally unchanged.
     local shadow = MakeBackdrop("GrimSuiteGCD_Shadow", frame)
     shadow:SetAnchorFill(frame)
-    shadow:SetCenterColor(0, 0, 0, 0.35)
-    shadow:SetEdgeColor(DARK_BORDER[1], DARK_BORDER[2], DARK_BORDER[3], DARK_BORDER[4])
+    shadow:SetCenterColor(0, 0, 0, 0.45)
+    shadow:SetEdgeColor(0, 0, 0, 0.95)
 
     local bg = MakeBackdrop("GrimSuiteGCD_BG", frame)
+    -- Keep the background tied to the GCD frame itself so resizing the frame
+    -- cannot leave a stale background rectangle at the old saved dimensions.
     bg:SetAnchor(TOPLEFT, frame, TOPLEFT, 1, 1)
-    bg:SetDimensions(math.max(1, GS.Saved.gcdWidth - 2), math.max(1, GS.Saved.gcdHeight - 2))
-    bg:SetCenterColor(0.035, 0.035, 0.035, 0.88)
-    SetCleanBorder(bg)
+    bg:SetAnchor(BOTTOMRIGHT, frame, BOTTOMRIGHT, -1, -1)
+    bg:SetCenterColor(0.025, 0.025, 0.025, 0.96)
+    bg:SetEdgeColor(0.16, 0.16, 0.16, 0.95)
 
-    local bar = MakeBackdrop("GrimSuiteGCD_Bar", frame)
-    bar:SetAnchor(TOPLEFT, bg, TOPLEFT, 1, 1)
-    bar:SetDimensions(math.max(1, GS.Saved.gcdWidth - 4), math.max(1, GS.Saved.gcdHeight - 4))
-    bar:SetCenterColor(0.10, 0.10, 0.10, 0.90)
-    bar:SetEdgeColor(0.20, 0.20, 0.20, 0.65)
+    local track = MakeBackdrop("GrimSuiteGCD_Bar", frame)
+    track:SetAnchor(TOPLEFT, frame, TOPLEFT, 3, 3)
+    track:SetDimensions(math.max(1, GS.Saved.gcdWidth - 6), math.max(1, GS.Saved.gcdHeight - 6))
+    track:SetCenterColor(0.07, 0.07, 0.07, 0.95)
+    track:SetEdgeColor(0.28, 0.28, 0.28, 0.90)
 
-    -- Moving GCD progress fill, matching the Combat Metronome concept:
-    -- the inner bar changes width as the GCD counts down while the outer
-    -- frame remains fixed.
+    -- GCD progress remains a shrinking fill.  Keep the established yellow
+    -- semantic so this is a visual rebuild, not a behavior change.
     local progress = MakeBackdrop("GrimSuiteGCD_Progress", frame)
-    progress:SetAnchor(TOPLEFT, frame, TOPLEFT, 2, 2)
-    progress:SetDimensions(0, math.max(1, GS.Saved.gcdHeight - 4))
-    progress:SetCenterColor(0.98, 0.82, 0.08, 0.98)
-    progress:SetEdgeColor(1.00, 0.92, 0.35, 0.30)
+    progress:SetAnchor(TOPLEFT, frame, TOPLEFT, 3, 3)
+    progress:SetDimensions(0, math.max(1, GS.Saved.gcdHeight - 6))
+    progress:SetCenterColor(0.98, 0.78, 0.08, 0.98)
+    progress:SetEdgeColor(1.00, 0.93, 0.35, 0.75)
 
-    -- Live latency window stays on the LEFT and is layered above the yellow
-    -- progress fill so the latency buffer remains visible.
+    -- Ping zone stays on the LEFT and above the GCD fill.  Its progression
+    -- behavior is deliberately untouched from the validated v2 fix.
     local ping = MakeBackdrop("GrimSuiteGCD_Ping", frame)
-    ping:SetAnchor(TOPLEFT, frame, TOPLEFT, 2, 2)
-    ping:SetDimensions(0, math.max(1, GS.Saved.gcdHeight - 4))
-    ping:SetCenterColor(0.82, 0.07, 0.07, 0.95)
-    ping:SetEdgeColor(1.00, 0.30, 0.30, 0.25)
+    ping:SetAnchor(TOPLEFT, frame, TOPLEFT, 3, 3)
+    ping:SetDimensions(0, math.max(1, GS.Saved.gcdHeight - 6))
+    ping:SetCenterColor(0.78, 0.035, 0.055, 0.96)
+    ping:SetEdgeColor(1.00, 0.24, 0.28, 0.85)
 
     local label = WM:CreateControl("GrimSuiteGCD_Time", frame, CT_LABEL)
     label:SetFont(SMALL_FONT)
     label:SetAnchor(CENTER, frame, CENTER, 0, 0)
     label:SetHorizontalAlignment(TEXT_ALIGN_CENTER)
+    label:SetVerticalAlignment(TEXT_ALIGN_CENTER)
+    label:SetColor(1, 1, 1, 1)
     label:SetText("")
 
     MakeMouseTransparent(bg)
-    MakeMouseTransparent(bar)
+    MakeMouseTransparent(track)
     MakeMouseTransparent(progress)
     MakeMouseTransparent(ping)
     MakeMouseTransparent(label)
 
     self.gcdFrame = frame
-    self.gcdBar = bar
+    self.gcdBar = track
     self.gcdPing = ping
     self.gcdProgress = progress
     self.gcdLabel = label
     self.gcdIdle = nil
 
-    -- Anchor the outer GCD bar once; its size is updated only when layout changes.
-    self.gcdBar:SetAnchorFill(self.gcdFrame)
+    self.gcdBar:ClearAnchors()
+    self.gcdBar:SetAnchor(TOPLEFT, self.gcdFrame, TOPLEFT, 3, 3)
 
     EnableMouseDrag(frame, self.layoutUnlocked)
-
     frame:SetHidden(false)
 end
 
@@ -654,30 +659,64 @@ function Combat:UpdateGCD()
     local width = self.gcdFrame:GetWidth()
     local height = self.gcdFrame:GetHeight()
 
-    -- Combat Metronome-style moving inner progress bar: it starts full and
-    -- shrinks as the GCD counts down.
+    -- The visible timeline is split into two zones:
+    --   RED  = latency window on the far LEFT
+    --   YELLOW = the actual GCD portion immediately to the RIGHT of RED
+    --
+    -- The yellow portion follows the same linear countdown/progress as the
+    -- full GCD timeline. Once the remaining time reaches the latency window,
+    -- yellow has reached the red zone; from that point the red zone shrinks
+    -- toward zero and finishes at the exact same instant as the GCD.
+    local innerWidth = math.max(1, width - 6)
+    local innerHeight = math.max(1, height - 6)
+
     local gcdProgress = 0
     if remaining > 0 and self.gcdDuration > 0 then
         gcdProgress = math.max(0, math.min(1, remaining / self.gcdDuration))
     end
-    local innerWidth = math.max(1, width - 4)
-    local innerHeight = math.max(1, height - 4)
-    local progressWidth = math.floor(gcdProgress * innerWidth)
-    self.gcdProgress:SetDimensions(progressWidth, innerHeight)
 
-    -- Live latency zone on the LEFT. Keep it above the yellow progress fill
-    -- so the latency buffer remains visible throughout the countdown.
     local pingMs = 0
     if remaining > 0 then
         pingMs = math.max(0, math.min(GetLatency(), self.gcdDuration))
     end
-    -- Keep the ping zone at its latency-derived width until the GCD
-    -- countdown reaches it. Once the yellow GCD progress reaches the
-    -- latency window, the visible red section continues shrinking with
-    -- the same countdown instead of behaving like its own mini GCD.
+
     local pingWidth = math.floor((pingMs / math.max(1, self.gcdDuration)) * innerWidth)
-    pingWidth = math.min(pingWidth, progressWidth)
-    self.gcdPing:SetDimensions(pingWidth, innerHeight)
+
+    -- The full remaining timeline would occupy gcdProgress * innerWidth.
+    -- Reserve the fixed latency zone on the left, so the yellow bar starts
+    -- exactly at the right edge of the red zone instead of underneath it.
+    -- Once the countdown enters the latency window, the yellow portion is
+    -- explicitly forced to zero.  Without this guard, tiny rounding/latency
+    -- changes around the boundary can make a 1-3px yellow sliver reappear
+    -- while the red zone is already shrinking.
+    local fullRemainingWidth = math.floor(gcdProgress * innerWidth)
+    local progressWidth = 0
+    if remaining > pingMs then
+        progressWidth = math.max(0, fullRemainingWidth - pingWidth)
+    end
+
+    self.gcdProgress:ClearAnchors()
+    self.gcdProgress:SetAnchor(TOPLEFT, frame, TOPLEFT, 3 + pingWidth, 3)
+    self.gcdProgress:SetDimensions(math.max(0, progressWidth), innerHeight)
+
+    -- A zero-width backdrop can still render its border for a pixel or two.
+    -- Hide the yellow control completely once it reaches the ping boundary so
+    -- the red-to-yellow handoff has no persistent yellow sliver.
+    self.gcdProgress:SetHidden(progressWidth <= 0)
+
+    -- Keep the red latency zone on the far LEFT at full width until the
+    -- countdown reaches the ping window.  During that final latency interval,
+    -- shrink the red zone linearly to zero so both zones finish together.
+    local visiblePingWidth = pingWidth
+    if pingMs > 0 and remaining <= pingMs then
+        visiblePingWidth = math.floor((remaining / pingMs) * pingWidth)
+    elseif remaining <= 0 then
+        visiblePingWidth = 0
+    end
+
+    self.gcdPing:ClearAnchors()
+    self.gcdPing:SetAnchor(TOPLEFT, frame, TOPLEFT, 3, 3)
+    self.gcdPing:SetDimensions(math.max(0, visiblePingWidth), innerHeight)
 
     local idle = remaining <= 0
     if idle ~= self.gcdIdle then
@@ -723,10 +762,11 @@ function Combat:CreateWeaveBar()
         GS.Saved.weaveX = math.floor(c:GetLeft() + 0.5)
         GS.Saved.weaveY = math.floor(c:GetTop() + 0.5)
     end)
-    -- Keep the average as its own top-level window so it can be dragged
-    -- independently without the weave bar underneath intercepting the mouse.
+
+    -- The average remains independently movable, but is now presented as a
+    -- compact status pill instead of bare floating text.
     local averageFrame = WM:CreateTopLevelWindow("GrimSuiteWeave_Avg")
-    averageFrame:SetDimensions(110, 22)
+    averageFrame:SetDimensions(116, 24)
     averageFrame:SetAnchor(TOPLEFT, GuiRoot, TOPLEFT,
         GS.Saved.weaveX + GS.Saved.weaveAverageX,
         GS.Saved.weaveY + GS.Saved.weaveAverageY)
@@ -745,32 +785,43 @@ function Combat:CreateWeaveBar()
         Combat:ApplyLayout()
     end)
 
-    -- CT_LABEL is the text control; the top-level window above is the
-    -- draggable hitbox.  Keeping them separate avoids calling label-only
-    -- methods on a top-level window.
-    -- Average is intentionally text-only: no backdrop or border.
-    local label = WM:CreateControl("GrimSuiteWeave_AvgLabel", averageFrame, CT_LABEL)
-    label:SetAnchorFill(averageFrame)
-    label:SetFont(SMALL_FONT)
-    label:SetHorizontalAlignment(TEXT_ALIGN_CENTER)
-    label:SetVerticalAlignment(TEXT_ALIGN_CENTER)
-    label:SetText("")
-    label:SetMouseEnabled(false)
+    local averageBg = MakeBackdrop("GrimSuiteWeave_AvgBG", averageFrame)
+    averageBg:SetAnchorFill(averageFrame)
+    averageBg:SetCenterColor(0.025, 0.025, 0.025, 0.94)
+    averageBg:SetEdgeColor(0.28, 0.28, 0.28, 0.95)
+
+    local averageAccent = MakeBackdrop("GrimSuiteWeave_AvgAccent", averageFrame)
+    averageAccent:SetAnchor(TOPLEFT, averageFrame, TOPLEFT, 1, 1)
+    averageAccent:SetDimensions(3, 22)
+    averageAccent:SetCenterColor(0.78, 0.035, 0.055, 1)
+    averageAccent:SetEdgeColor(1.00, 0.24, 0.28, 0.75)
+
+    local averageLabel = WM:CreateControl("GrimSuiteWeave_AvgLabel", averageFrame, CT_LABEL)
+    averageLabel:SetAnchorFill(averageFrame)
+    averageLabel:SetFont(SMALL_FONT)
+    averageLabel:SetHorizontalAlignment(TEXT_ALIGN_CENTER)
+    averageLabel:SetVerticalAlignment(TEXT_ALIGN_CENTER)
+    averageLabel:SetColor(0.95, 0.95, 0.95, 1)
+    averageLabel:SetText("")
+    averageLabel:SetMouseEnabled(false)
+
+    MakeMouseTransparent(averageBg)
+    MakeMouseTransparent(averageAccent)
 
     local shadow = MakeBackdrop("GrimSuiteWeave_Shadow", frame)
     shadow:SetAnchorFill(frame)
-    shadow:SetCenterColor(0, 0, 0, 0.35)
-    shadow:SetEdgeColor(DARK_BORDER[1], DARK_BORDER[2], DARK_BORDER[3], DARK_BORDER[4])
+    shadow:SetCenterColor(0, 0, 0, 0.45)
+    shadow:SetEdgeColor(0, 0, 0, 0.95)
 
     local bar = MakeBackdrop("GrimSuiteWeave_BG", frame)
     bar:SetAnchor(TOPLEFT, frame, TOPLEFT, 1, 1)
     bar:SetDimensions(math.max(1, GS.Saved.weaveWidth - 2), math.max(1, GS.Saved.weaveHeight - 2))
-    bar:SetCenterColor(0.035, 0.035, 0.035, 0.88)
-    SetCleanBorder(bar)
+    bar:SetCenterColor(0.025, 0.025, 0.025, 0.96)
+    bar:SetEdgeColor(0.16, 0.16, 0.16, 0.95)
 
     self.weaveFrame = frame
     self.weaveAverageFrame = averageFrame
-    self.weaveAverage = label
+    self.weaveAverage = averageLabel
     MakeMouseTransparent(bar)
 
     self.weaveBar = bar
@@ -780,24 +831,39 @@ function Combat:CreateWeaveBar()
     local barWidth = math.max(1, GS.Saved.weaveWidth - 4)
     local barHeight = GS.Saved.weaveHeight
     local slotW = barWidth / self.weave.max
-    local slotH = math.max(4, barHeight - 6)
+    local slotH = math.max(8, barHeight - 8)
     for i = 1, self.weave.max do
         local slot = MakeBackdrop("GrimSuiteWeave_Slot"..i, frame)
-        slot:SetDimensions(math.max(1, slotW - 2), slotH)
-        slot:SetAnchor(BOTTOMLEFT, bar, BOTTOMLEFT, 1 + (i-1)*slotW, -1)
-        slot:SetCenterColor(0.08, 0.08, 0.08, 0.75)
-        slot:SetEdgeColor(0.18, 0.18, 0.18, 0.90)
+        slot:SetDimensions(math.max(1, slotW - 3), slotH)
+        slot:SetAnchor(TOPLEFT, bar, TOPLEFT, 2 + (i-1)*slotW, 3)
+        slot:SetCenterColor(0.055, 0.055, 0.055, 0.92)
+        slot:SetEdgeColor(0.20, 0.20, 0.20, 0.95)
         self.weaveSlots[i] = slot
         MakeMouseTransparent(slot)
 
-        -- Fixed LA-status marker, inspired by WeaveDelays but intentionally
-        -- static: it never slides or changes size. Green = confirmed LA,
-        -- red = no confirmed LA for this skill interval.
-        local la = MakeBackdrop("GrimSuiteWeave_LA"..i, slot)
-        la:SetAnchor(LEFT, slot, LEFT, 0, 0)
-        la:SetDimensions(math.min(8, math.max(4, math.floor(slotW * 0.20))), math.max(1, slotH - 2))
+        local delayLabel = WM:CreateControl("GrimSuiteWeave_Delay"..i, slot, CT_LABEL)
+        delayLabel:SetAnchor(CENTER, slot, CENTER, 2, -1)
+        delayLabel:SetFont(SMALL_FONT)
+        delayLabel:SetHorizontalAlignment(TEXT_ALIGN_CENTER)
+        delayLabel:SetVerticalAlignment(TEXT_ALIGN_CENTER)
+        delayLabel:SetColor(1, 1, 1, 0.95)
+        delayLabel:SetText("")
+        MakeMouseTransparent(delayLabel)
+        slot.delayLabel = delayLabel
+
+        -- Vertical LA status marker: green = confirmed LA, red = missed LA.
+        -- IMPORTANT: make this a SIBLING of the slot rather than a child of the
+        -- slot backdrop.  ESO's backdrop draw order can otherwise leave the
+        -- marker visually buried under the slot fill/border.
+        -- The marker sits inside the LEFT side of the colored slot, fills it
+        -- vertically, and is about 2px wider than the original indicator.
+        local la = MakeBackdrop("GrimSuiteWeave_LA"..i, frame)
+        la:SetAnchor(TOPLEFT, slot, TOPLEFT, 1, 1)
+        la:SetDimensions(6, math.max(1, slotH - 2))
+        la:SetDrawLayer(DL_OVERLAY)
+        la:SetDrawTier(DT_HIGH)
         la:SetCenterColor(0.15, 0.85, 0.20, 1)
-        la:SetEdgeColor(0.60, 1.00, 0.65, 0.30)
+        la:SetEdgeColor(0.60, 1.00, 0.65, 0.45)
         MakeMouseTransparent(la)
         self.weaveSlots[i].la = la
     end
@@ -806,7 +872,9 @@ function Combat:CreateWeaveBar()
 end
 
 function Combat:AddWeave(delay, laMissed, windowStart, windowEnd)
-    delay = Clamp(tonumber(delay) or 1000, 1, 950)
+    -- Keep real low positive delays. Values at/before the GCD end represent
+    -- no wasted time and are shown as 0 ms instead of being forced to 1 ms.
+    delay = Clamp(tonumber(delay) or 1000, 0, 950)
 
     table.insert(self.weave.actions, {
         delay = delay,
@@ -818,7 +886,7 @@ function Combat:AddWeave(delay, laMissed, windowStart, windowEnd)
         table.remove(self.weave.actions, 1)
     end
 
-    -- Keep a true rolling average over the most recent 25 skill delays.
+    -- Keep a true rolling average over the most recent averageMax skill delays.
     table.insert(self.weave.averagePending, delay)
     self.weave.averageSum = self.weave.averageSum + delay
     if #self.weave.averagePending > self.weave.averageMax then
@@ -848,28 +916,42 @@ function Combat:UpdateWeave()
 
         if delay then
             local r,g,b,a = DelayColor(delay)
-            slot:SetCenterColor(r,g,b,a)
-            slot:SetEdgeColor(math.min(1, r * 0.55), math.min(1, g * 0.55), math.min(1, b * 0.55), 0.95)
+            slot:SetCenterColor(r * 0.72, g * 0.72, b * 0.72, 0.92)
+            slot:SetEdgeColor(r, g, b, 0.95)
+            if slot.delayLabel then
+                if GS.Saved.showWeaveMs then
+                    slot.delayLabel:SetText(string.format("%d", math.floor(delay + 0.5)))
+                    slot.delayLabel:SetColor(1, 1, 1, 0.98)
+                else
+                    slot.delayLabel:SetText("")
+                end
+            end
             if slot.la then
                 if entry.laMissed then
                     slot.la:SetCenterColor(0.90, 0.12, 0.10, 1)
+                    slot.la:SetEdgeColor(1.00, 0.30, 0.28, 0.75)
                 else
                     slot.la:SetCenterColor(0.15, 0.85, 0.20, 1)
+                    slot.la:SetEdgeColor(0.60, 1.00, 0.65, 0.55)
                 end
             end
         else
-            slot:SetCenterColor(0.08,0.08,0.08,0.70)
-            slot:SetEdgeColor(0.18, 0.18, 0.18, 0.90)
+            slot:SetCenterColor(0.055, 0.055, 0.055, 0.92)
+            slot:SetEdgeColor(0.20, 0.20, 0.20, 0.95)
+            if slot.delayLabel then
+                slot.delayLabel:SetText("")
+            end
             if slot.la then
-                slot.la:SetCenterColor(0.15, 0.15, 0.15, 0.5)
+                slot.la:SetCenterColor(0.10, 0.10, 0.10, 0.65)
+                slot.la:SetEdgeColor(0.20, 0.20, 0.20, 0.45)
             end
         end
     end
 
     if self.weave.averageCount > 0 then
-        self.weaveAverage:SetText(string.format("avg %.0f ms", self.weave.averageSum / self.weave.averageCount))
+        self.weaveAverage:SetText(string.format("AVG  %d ms", math.floor((self.weave.averageSum / self.weave.averageCount) + 0.5)))
     else
-        self.weaveAverage:SetText("")
+        self.weaveAverage:SetText("AVG  -- ms")
     end
 end
 
@@ -879,10 +961,26 @@ end
 
 function Combat:OnCombatState(_, inCombat)
     self.inCombat = inCombat == true
+
+    -- Keep timing state strictly scoped to the current combat encounter.
+    -- The visible 10-slot history and rolling average are intentionally preserved.
+    if not self.inCombat then
+        self.weave.pendingLA = nil
+        self.weave.previousSkillAt = nil
+        self.weave.previousSkillEnd = nil
+        self.weave.lastLAConfirmed = nil
+    end
+
     self:UpdateWeave()
 end
 
 function Combat:OnSlotUsed(_, slotId)
+    -- Ignore all skill-slot events outside combat so they cannot seed or
+    -- contaminate the next combat encounter's first measured interval.
+    if not self.inCombat then
+        return
+    end
+
     -- Slot 1 is the light attack button. We do not count the button press
     -- itself as a successful LA; OnCombatEvent confirms that the LA actually
     -- produced a combat result.
@@ -924,12 +1022,6 @@ function Combat:OnSlotUsed(_, slotId)
 
     if self.weave.previousSkillEnd then
         local delay = now - self.weave.previousSkillEnd
-
-        -- Queued skills can be registered a few milliseconds before our
-        -- calculated GCD/cast end. Do not turn that into a fake 1 ms weave.
-        if delay < 0 then
-            delay = 0
-        end
 
         -- Every skill-to-skill interval is recorded. LA compliance is a
         -- separate binary flag: did a confirmed LA occur during this interval?
@@ -1012,13 +1104,13 @@ function Combat:ApplyLayout()
         self.gcdFrame:ClearAnchors()
         self.gcdFrame:SetAnchor(TOPLEFT, GuiRoot, TOPLEFT, GS.Saved.gcdX, GS.Saved.gcdY)
         if self.gcdProgress then
-            self.gcdProgress:SetHeight(math.max(1, GS.Saved.gcdHeight - 4))
+            self.gcdProgress:SetHeight(math.max(1, GS.Saved.gcdHeight - 6))
         end
         if self.gcdPing then
-            self.gcdPing:SetHeight(math.max(1, GS.Saved.gcdHeight - 4))
+            self.gcdPing:SetHeight(math.max(1, GS.Saved.gcdHeight - 6))
         end
         if self.gcdBar then
-            self.gcdBar:SetDimensions(math.max(1, GS.Saved.gcdWidth - 4), math.max(1, GS.Saved.gcdHeight - 4))
+            self.gcdBar:SetDimensions(math.max(1, GS.Saved.gcdWidth - 6), math.max(1, GS.Saved.gcdHeight - 6))
         end
     end
 
@@ -1042,14 +1134,26 @@ function Combat:ApplyLayout()
             bar:SetDimensions(math.max(1, GS.Saved.weaveWidth - 2), math.max(1, barHeight - 2))
             local innerWidth = math.max(1, GS.Saved.weaveWidth - 4)
             local slotW = innerWidth / self.weave.max
-            local slotH = math.max(4, barHeight - 6)
+            local slotH = math.max(8, barHeight - 8)
             for i = 1, self.weave.max do
                 local slot = self.weaveSlots[i]
-                slot:SetDimensions(math.max(1, slotW - 2), slotH)
+                slot:SetDimensions(math.max(1, slotW - 3), slotH)
                 slot:ClearAnchors()
-                slot:SetAnchor(BOTTOMLEFT, bar, BOTTOMLEFT, 1 + (i-1)*slotW, -1)
+                slot:SetAnchor(TOPLEFT, bar, TOPLEFT, 2 + (i-1)*slotW, 3)
                 if slot.la then
-                    slot.la:SetDimensions(math.min(8, math.max(4, math.floor(slotW * 0.20))), math.max(1, slotH - 2))
+                    slot:SetClampedToScreen(true)
+                    -- Keep the LA result marker as a vertical strip on the
+                    -- inside-left of the delay slot.  This must match the
+                    -- dimensions/anchor used when the bar is created; the
+                    -- old horizontal 3px marker here was undoing the visual
+                    -- rebuild every time ApplyLayout() ran.
+                    slot.la:SetDimensions(6, math.max(1, slotH - 2))
+                    slot.la:ClearAnchors()
+                    slot.la:SetAnchor(TOPLEFT, slot, TOPLEFT, 1, 1)
+                end
+                if slot.delayLabel then
+                    slot.delayLabel:ClearAnchors()
+                    slot.delayLabel:SetAnchor(CENTER, slot, CENTER, 2, -1)
                 end
             end
         end
@@ -1116,6 +1220,7 @@ function Combat:CreateSettings()
 
         { type="header", name="Skill Delay History", width="full" },
         { type="checkbox", name="Show Skill Delay History", getFunc=function() return GS.Saved.showWeave end, setFunc=function(v) GS.Saved.showWeave=v; self:UpdateWeave() end, default=GS.SV.showWeave },
+        { type="checkbox", name="Show Delay Values (ms)", getFunc=function() return GS.Saved.showWeaveMs end, setFunc=function(v) GS.Saved.showWeaveMs=v; self:UpdateWeave() end, default=GS.SV.showWeaveMs },
         { type="slider", name="Horizontal Position (X)", min=0, max=3840, step=1, getFunc=function() return GS.Saved.weaveX end, setFunc=function(v) GS.Saved.weaveX=v; self:ApplyLayout() end, default=GS.SV.weaveX, width="full" },
         { type="slider", name="Vertical Position (Y)", min=0, max=2160, step=1, getFunc=function() return GS.Saved.weaveY end, setFunc=function(v) GS.Saved.weaveY=v; self:ApplyLayout() end, default=GS.SV.weaveY, width="full" },
         { type="button", name="Center Horizontally", func=function() CenterControl(self.weaveFrame, true, false, "weaveX", "weaveY") end, width="half" },
@@ -1123,7 +1228,7 @@ function Combat:CreateSettings()
         { type="slider", name="Horizontal Size (Width)", min=100, max=1000, step=1, getFunc=function() return GS.Saved.weaveWidth end, setFunc=function(v) GS.Saved.weaveWidth=v; self:ApplyLayout() end, default=GS.SV.weaveWidth, width="full" },
         { type="slider", name="Vertical Size (Height)", min=20, max=100, step=1, getFunc=function() return GS.Saved.weaveHeight end, setFunc=function(v) GS.Saved.weaveHeight=v; self:ApplyLayout() end, default=GS.SV.weaveHeight, width="full" },
         { type="header", name="Average Display", width="full" },
-        { type="description", text="Move the 25-action average independently from the delay history bar.", width="full" },
+        { type="description", text="Move the rolling delay average independently from the delay history bar.", width="full" },
         { type="slider", name="Average Horizontal Position", min=-200, max=1000, step=1, getFunc=function() return GS.Saved.weaveAverageX end, setFunc=function(v) GS.Saved.weaveAverageX=v; self:ApplyLayout() end, default=GS.SV.weaveAverageX, width="full" },
         { type="slider", name="Average Vertical Position", min=-200, max=500, step=1, getFunc=function() return GS.Saved.weaveAverageY end, setFunc=function(v) GS.Saved.weaveAverageY=v; self:ApplyLayout() end, default=GS.SV.weaveAverageY, width="full" },
     })

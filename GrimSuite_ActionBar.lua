@@ -874,11 +874,37 @@ local function IsStackProcReady(abilityId)
     return stacks ~= nil and stacks >= required
 end
 
+-- Simmering Frenzy (often referred to as "Shimmering Frenzy") is a toggle
+-- whose active state should remain visible on the custom action bar even when
+-- the weapon bar containing it is inactive.  The other toggle glows remain
+-- active-bar-only so we do not change their existing behavior.
+local function IsSimmeringFrenzyAbility(abilityId)
+    if not abilityId or abilityId <= 0 or not GetAbilityName then
+        return false
+    end
+
+    local ok, name = pcall(GetAbilityName, abilityId)
+    if not ok or not name then
+        return false
+    end
+
+    name = zo_strlower(tostring(name))
+    return string.find(name, "simmering frenzy", 1, true) ~= nil
+        or string.find(name, "shimmering frenzy", 1, true) ~= nil
+end
+
 local function UpdateSlotGlow(data, slot, category, active, ultimateReady)
     if not data or not data.glow then return end
     local abilityId = GetAbilityForSlot(slot, category)
     local procReady = abilityId > 0 and IsStackProcReady(abilityId)
-    local shouldGlow = (active and IsSlotToggleActive(slot, category)) or ultimateReady or procReady
+    local persistentToggle = abilityId > 0
+        and IsSimmeringFrenzyAbility(abilityId)
+        and IsSlotToggleActive(slot, category)
+    local shouldGlow = (active and IsSlotToggleActive(slot, category))
+        or persistentToggle
+        or ultimateReady
+        or procReady
+
     data.glow:SetHidden(not shouldGlow)
     if data.outerGlow then
         data.outerGlow:SetHidden(not shouldGlow)
@@ -1085,6 +1111,23 @@ local function UpdateActiveBarGlows()
     -- bar as well.
     UpdateFatecarverGlowForBar(ActionBar.frontControls, HOTBAR_CATEGORY_PRIMARY)
     UpdateFatecarverGlowForBar(ActionBar.backbarControls, HOTBAR_CATEGORY_BACKUP)
+
+    -- Simmering/Shimmering Frenzy is a persistent toggle: keep its glow
+    -- synchronized even when the row containing it is inactive.
+    for _, entry in ipairs({
+        { controls = ActionBar.frontControls, category = HOTBAR_CATEGORY_PRIMARY },
+        { controls = ActionBar.backbarControls, category = HOTBAR_CATEGORY_BACKUP },
+    }) do
+        for slot = MIN_SLOT, MAX_SLOT do
+            local data = entry.controls[slot]
+            if data and data.glow then
+                local abilityId = GetAbilityForSlot(slot, entry.category)
+                if IsSimmeringFrenzyAbility(abilityId) then
+                    UpdateSlotGlow(data, slot, entry.category, false, false)
+                end
+            end
+        end
+    end
 end
 
 local function TrackPlayerEffect(eventCode, change, effectSlot, effectName, unitTag, beginTime, endTime, stackCount, iconName, buffType, effectType, abilityType, statusEffectType, unitName, unitId, abilityId, sourceType)
