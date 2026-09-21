@@ -1075,7 +1075,7 @@ function Combat:OnSlotUsed(_, slotId)
         local ok, name = pcall(GetAbilityName, boundId)
         if ok and name then
             name = zo_strlower(tostring(name))
-            if string.find(name, "fatecarver", 1, true) then
+            if string.find(name, "exhausting fatecarver", 1, true) then
                 local crux = 0
                 local tracked = GS.ActionBar and GS.ActionBar.effectStacks
                 if tracked and tracked[184220] then
