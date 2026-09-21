@@ -29,6 +29,7 @@ Combat.gcdStart = 0
 Combat.gcdDuration = 1000
 Combat.inCombat = false
 Combat.layoutUnlocked = false
+Combat.hudVisible = true
 
 Combat.weave = {
     actions = {},
@@ -76,16 +77,86 @@ local function CenterControl(control, horizontal, vertical, xKey, yKey)
     Combat:ApplyLayout()
 end
 
-local function EnableMouseDrag(control, isUnlocked)
+local combatDragState = {
+    control = nil,
+    dragging = false,
+    startMouseX = 0,
+    startMouseY = 0,
+    startLeft = 0,
+    startTop = 0,
+    onStop = nil,
+}
+
+local function UpdateCombatMouseDrag()
+    if not combatDragState.dragging or not combatDragState.control then
+        return
+    end
+
+    if not Combat.layoutUnlocked then
+        combatDragState.dragging = false
+        combatDragState.control = nil
+        combatDragState.onStop = nil
+        return
+    end
+
+    local x, y = GetUIMousePosition()
+    if not x or not y then return end
+
+    local control = combatDragState.control
+    local left = combatDragState.startLeft + (x - combatDragState.startMouseX)
+    local top = combatDragState.startTop + (y - combatDragState.startMouseY)
+
+    control:ClearAnchors()
+    control:SetAnchor(TOPLEFT, GuiRoot, TOPLEFT, left, top)
+end
+
+local function EnableMouseDrag(control, isUnlocked, onStop)
     if not control then return end
 
-    -- Use ESO's native TopLevelWindow dragging. This is intentionally kept
-    -- simple: this was the mechanism used by the original working prototype.
-    -- The settings toggle only enables/disables mouse input; the frame remains
-    -- movable so ESO can handle the drag natively.
-    control:SetMouseEnabled(isUnlocked)
-    control:SetMovable(true)
+    -- GrimSuite uses LEFT-click drag for every movable control.  Keep native
+    -- ESO dragging disabled so there is no right-click movement fallback.
+    control:SetMouseEnabled(isUnlocked == true)
+    control:SetMovable(false)
     control:SetClampedToScreen(true)
+
+    control:SetHandler("OnMouseDown", function(c, button)
+        if button ~= MOUSE_BUTTON_INDEX_LEFT or not Combat.layoutUnlocked then
+            return
+        end
+
+        local x, y = GetUIMousePosition()
+        if not x or not y then return end
+
+        combatDragState.control = c
+        combatDragState.dragging = true
+        combatDragState.startMouseX = x
+        combatDragState.startMouseY = y
+        combatDragState.startLeft = c:GetLeft() or 0
+        combatDragState.startTop = c:GetTop() or 0
+        combatDragState.onStop = onStop
+    end)
+
+    control:SetHandler("OnMouseUp", function(c, button)
+        if button ~= MOUSE_BUTTON_INDEX_LEFT then
+            return
+        end
+
+        if combatDragState.control ~= c then
+            return
+        end
+
+        combatDragState.dragging = false
+        combatDragState.control = nil
+
+        local callback = combatDragState.onStop
+        combatDragState.onStop = nil
+        if callback then
+            callback(c)
+        end
+    end)
+
+    EM:UnregisterForUpdate(GS.name .. "_CombatMouseDrag")
+    EM:RegisterForUpdate(GS.name .. "_CombatMouseDrag", 16, UpdateCombatMouseDrag)
 end
 
 local function DisableAttributeChildMouse(control)
@@ -100,11 +171,35 @@ local function DisableAttributeChildMouse(control)
     end
 end
 
-local function EnableAttributeDrag(control, isUnlocked)
-    if not control then return end
-    control:SetMouseEnabled(isUnlocked == true)
-    control:SetMovable(isUnlocked == true)
-    control:SetClampedToScreen(true)
+local function EnableAttributeDrag(control, isUnlocked, onStop)
+    EnableMouseDrag(control, isUnlocked, onStop)
+end
+
+local function SaveGCDPosition(control)
+    GS.Saved.gcdX = math.floor((control:GetLeft() or GS.Saved.gcdX) + 0.5)
+    GS.Saved.gcdY = math.floor((control:GetTop() or GS.Saved.gcdY) + 0.5)
+end
+
+local function SaveWeavePosition(control)
+    GS.Saved.weaveX = math.floor((control:GetLeft() or GS.Saved.weaveX) + 0.5)
+    GS.Saved.weaveY = math.floor((control:GetTop() or GS.Saved.weaveY) + 0.5)
+end
+
+local function SaveAveragePosition(control)
+    if not Combat.weaveFrame then return end
+    GS.Saved.weaveAverageX = math.floor((control:GetLeft() - Combat.weaveFrame:GetLeft()) + 0.5)
+    GS.Saved.weaveAverageY = math.floor((control:GetTop() - Combat.weaveFrame:GetTop()) + 0.5)
+    Combat:ApplyLayout()
+end
+
+local function SaveAttributesPosition(control)
+    local centerX = GuiRoot:GetWidth() * 0.5
+    local centerY = GuiRoot:GetHeight() * 0.5
+    local cX, cY = control:GetCenter()
+    if not cX or not cY then return end
+    GS.Saved.attributesX = math.floor((cX - centerX) + 0.5)
+    GS.Saved.attributesY = math.floor((cY - centerY) + 0.5)
+    Combat:ApplyLayout()
 end
 
 local function MakeMouseTransparent(control)
@@ -116,13 +211,18 @@ end
 local function SetLayoutUnlocked(enabled)
     Combat.layoutUnlocked = enabled == true
 
-    EnableMouseDrag(Combat.gcdFrame, Combat.layoutUnlocked)
-    EnableMouseDrag(Combat.weaveFrame, Combat.layoutUnlocked)
-    EnableAttributeDrag(GetControl("GrimSuiteAttributes"), Combat.layoutUnlocked)
+    if not Combat.layoutUnlocked then
+        combatDragState.dragging = false
+        combatDragState.control = nil
+        combatDragState.onStop = nil
+    end
+
+    EnableMouseDrag(Combat.gcdFrame, Combat.layoutUnlocked, SaveGCDPosition)
+    EnableMouseDrag(Combat.weaveFrame, Combat.layoutUnlocked, SaveWeavePosition)
+    EnableAttributeDrag(GetControl("GrimSuiteAttributes"), Combat.layoutUnlocked, SaveAttributesPosition)
 
     if Combat.weaveAverageFrame then
-        Combat.weaveAverageFrame:SetMouseEnabled(Combat.layoutUnlocked)
-        Combat.weaveAverageFrame:SetMovable(Combat.layoutUnlocked)
+        EnableMouseDrag(Combat.weaveAverageFrame, Combat.layoutUnlocked, SaveAveragePosition)
         Combat.weaveAverageFrame:SetHidden(not Combat.layoutUnlocked)
     end
 end
@@ -486,28 +586,6 @@ function Combat:CreateAttributes()
     self.attributesInitialized = true
     self:LayoutAttributes()
 
-    container:SetMouseEnabled(false)
-    container:SetMovable(false)
-    container:SetClampedToScreen(true)
-
-    container:SetHandler("OnMouseDown", function(c, button)
-        if button == MOUSE_BUTTON_INDEX_LEFT and Combat.layoutUnlocked then
-            c:StartMoving()
-        end
-    end)
-
-    container:SetHandler("OnMoveStop", function(c)
-        if not Combat.layoutUnlocked then return end
-
-        local centerX, centerY = GuiRoot:GetWidth() * 0.5, GuiRoot:GetHeight() * 0.5
-        local cX, cY = c:GetCenter()
-
-        GS.Saved.attributesX = math.floor((cX - centerX) + 0.5)
-        GS.Saved.attributesY = math.floor((cY - centerY) + 0.5)
-
-        self:ApplyLayout()
-    end)
-
     container:RegisterForEvent(
         EVENT_GAMEPAD_PREFERRED_MODE_CHANGED,
         function()
@@ -532,7 +610,7 @@ function Combat:CreateAttributes()
         end
     )
 
-    EnableAttributeDrag(container, self.layoutUnlocked)
+    EnableAttributeDrag(container, self.layoutUnlocked, SaveAttributesPosition)
 end
 
 function Combat:LayoutAttributes()
@@ -628,7 +706,7 @@ function Combat:CreateGCD()
     self.gcdBar:ClearAnchors()
     self.gcdBar:SetAnchor(TOPLEFT, self.gcdFrame, TOPLEFT, 3, 3)
 
-    EnableMouseDrag(frame, self.layoutUnlocked)
+    EnableMouseDrag(frame, self.layoutUnlocked, SaveGCDPosition)
     frame:SetHidden(false)
 end
 
@@ -645,7 +723,7 @@ end
 function Combat:UpdateGCD()
     if not self.gcdFrame then return end
 
-    if not GS.Saved.showGCD then
+    if not self.hudVisible or not GS.Saved.showGCD then
         self.gcdFrame:SetHidden(true)
         return
     end
@@ -770,20 +848,8 @@ function Combat:CreateWeaveBar()
     averageFrame:SetAnchor(TOPLEFT, GuiRoot, TOPLEFT,
         GS.Saved.weaveX + GS.Saved.weaveAverageX,
         GS.Saved.weaveY + GS.Saved.weaveAverageY)
-    averageFrame:SetMouseEnabled(self.layoutUnlocked)
-    averageFrame:SetMovable(self.layoutUnlocked)
+    EnableMouseDrag(averageFrame, self.layoutUnlocked, SaveAveragePosition)
     averageFrame:SetHidden(not self.layoutUnlocked)
-    averageFrame:SetHandler("OnMouseDown", function(c, button)
-        if button == MOUSE_BUTTON_INDEX_LEFT and Combat.layoutUnlocked then
-            c:StartMoving()
-        end
-    end)
-    averageFrame:SetHandler("OnMoveStop", function(c)
-        if not Combat.layoutUnlocked then return end
-        GS.Saved.weaveAverageX = math.floor(c:GetLeft() - frame:GetLeft() + 0.5)
-        GS.Saved.weaveAverageY = math.floor(c:GetTop() - frame:GetTop() + 0.5)
-        Combat:ApplyLayout()
-    end)
 
     local averageBg = MakeBackdrop("GrimSuiteWeave_AvgBG", averageFrame)
     averageBg:SetAnchorFill(averageFrame)
@@ -826,7 +892,7 @@ function Combat:CreateWeaveBar()
 
     self.weaveBar = bar
     self.weaveSlots = {}
-    EnableMouseDrag(frame, self.layoutUnlocked)
+    EnableMouseDrag(frame, self.layoutUnlocked, SaveWeavePosition)
 
     local barWidth = math.max(1, GS.Saved.weaveWidth - 4)
     local barHeight = GS.Saved.weaveHeight
@@ -1123,8 +1189,7 @@ function Combat:ApplyLayout()
             self.weaveAverageFrame:SetAnchor(TOPLEFT, GuiRoot, TOPLEFT,
                 GS.Saved.weaveX + GS.Saved.weaveAverageX,
                 GS.Saved.weaveY + GS.Saved.weaveAverageY)
-            self.weaveAverageFrame:SetMouseEnabled(self.layoutUnlocked)
-            self.weaveAverageFrame:SetMovable(self.layoutUnlocked)
+            EnableMouseDrag(self.weaveAverageFrame, self.layoutUnlocked, SaveAveragePosition)
             self.weaveAverageFrame:SetHidden(not self.layoutUnlocked)
         end
 
@@ -1170,7 +1235,7 @@ function Combat:ApplyLayout()
                 GS.Saved.attributesX or 0,
                 GS.Saved.attributesY or 0
             )
-            EnableAttributeDrag(attributes, self.layoutUnlocked)
+            EnableAttributeDrag(attributes, self.layoutUnlocked, SaveAttributesPosition)
         end
     end
 end
@@ -1255,6 +1320,7 @@ function Combat:Initialize()
             end
 
             local hudScene = (scene == HUD_SCENE or scene == HUD_UI_SCENE)
+            self.hudVisible = hudScene
 
             if GS.ActionBar and GS.ActionBar.SetHUDVisible then
                 GS.ActionBar:SetHUDVisible(hudScene)
