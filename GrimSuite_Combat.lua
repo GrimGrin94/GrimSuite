@@ -617,9 +617,13 @@ function Combat:LayoutAttributes()
     local container = GetControl("GrimSuiteAttributes")
     if not container or not self.attributeHealth then return end
 
-    container:SetDimensions(500, 120)
-
     local gap = IsInGamepadPreferredMode() and 12 or 6
+
+    -- Keep the movable hitbox tight to the actual three-bar layout.
+    -- Health is 360px wide; Magicka/Stamina extend 5px beyond each side.
+    -- Height is the two stacked bar rows plus their gap.
+    local barHeight = IsInGamepadPreferredMode() and 96 or 32
+    container:SetDimensions(730, (barHeight * 2) + gap)
 
     self.attributeHealth.control:ClearAnchors()
     self.attributeHealth.control:SetAnchor(TOP, container, TOP, 0, 0)
@@ -661,7 +665,7 @@ function Combat:CreateGCD()
     bg:SetEdgeColor(0.16, 0.16, 0.16, 0.95)
 
     local track = MakeBackdrop("GrimSuiteGCD_Bar", frame)
-    track:SetAnchor(TOPLEFT, frame, TOPLEFT, 3, 3)
+    track:SetAnchor(TOPLEFT, self.gcdFrame, TOPLEFT, 3, 3)
     track:SetDimensions(math.max(1, GS.Saved.gcdWidth - 6), math.max(1, GS.Saved.gcdHeight - 6))
     track:SetCenterColor(0.07, 0.07, 0.07, 0.95)
     track:SetEdgeColor(0.28, 0.28, 0.28, 0.90)
@@ -669,7 +673,7 @@ function Combat:CreateGCD()
     -- GCD progress remains a shrinking fill.  Keep the established yellow
     -- semantic so this is a visual rebuild, not a behavior change.
     local progress = MakeBackdrop("GrimSuiteGCD_Progress", frame)
-    progress:SetAnchor(TOPLEFT, frame, TOPLEFT, 3, 3)
+    progress:SetAnchor(TOPLEFT, self.gcdFrame, TOPLEFT, 3, 3)
     progress:SetDimensions(0, math.max(1, GS.Saved.gcdHeight - 6))
     progress:SetCenterColor(0.98, 0.78, 0.08, 0.98)
     progress:SetEdgeColor(1.00, 0.93, 0.35, 0.75)
@@ -677,7 +681,7 @@ function Combat:CreateGCD()
     -- Ping zone stays on the LEFT and above the GCD fill.  Its progression
     -- behavior is deliberately untouched from the validated v2 fix.
     local ping = MakeBackdrop("GrimSuiteGCD_Ping", frame)
-    ping:SetAnchor(TOPLEFT, frame, TOPLEFT, 3, 3)
+    ping:SetAnchor(TOPLEFT, self.gcdFrame, TOPLEFT, 3, 3)
     ping:SetDimensions(0, math.max(1, GS.Saved.gcdHeight - 6))
     ping:SetCenterColor(0.78, 0.035, 0.055, 0.96)
     ping:SetEdgeColor(1.00, 0.24, 0.28, 0.85)
@@ -774,7 +778,7 @@ function Combat:UpdateGCD()
     end
 
     self.gcdProgress:ClearAnchors()
-    self.gcdProgress:SetAnchor(TOPLEFT, frame, TOPLEFT, 3 + pingWidth, 3)
+    self.gcdProgress:SetAnchor(TOPLEFT, self.gcdFrame, TOPLEFT, 3 + pingWidth, 3)
     self.gcdProgress:SetDimensions(math.max(0, progressWidth), innerHeight)
 
     -- A zero-width backdrop can still render its border for a pixel or two.
@@ -793,7 +797,7 @@ function Combat:UpdateGCD()
     end
 
     self.gcdPing:ClearAnchors()
-    self.gcdPing:SetAnchor(TOPLEFT, frame, TOPLEFT, 3, 3)
+    self.gcdPing:SetAnchor(TOPLEFT, self.gcdFrame, TOPLEFT, 3, 3)
     self.gcdPing:SetDimensions(math.max(0, visiblePingWidth), innerHeight)
 
     local idle = remaining <= 0
@@ -819,12 +823,10 @@ local function Clamp(v, lo, hi)
 end
 
 local function DelayColor(delay)
-    if delay < 20 then
+    if delay <= 35 then
         return 0.35, 0.80, 1.00, 1
-    elseif delay <= 50 then
-        return 0.15, 0.85, 0.20, 1
     elseif delay <= 100 then
-        return 0.75, 0.85, 0.15, 1
+        return 0.15, 0.85, 0.20, 1
     elseif delay <= 200 then
         return 0.95, 0.55, 0.10, 1
     else
