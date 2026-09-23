@@ -3,7 +3,7 @@ GS.ActionBar = GS.ActionBar or {}
 local ActionBar = GS.ActionBar
 
 ---------------------------------------------------------------------
--- GrimSuite Action Bar v1.2.1
+-- GrimSuite Action Bar v1.3.0 Dev
 --
 -- Static two-row action bar:
 --   * FRONT BAR is always the top row.
