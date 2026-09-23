@@ -128,11 +128,44 @@ few saved setups and users with large collections of highly specialized
 configurations.
 
 
-## v4.x — Future Development
-Major direction to be determined.
+## v4.x — GrimSuite Inventory
+Major inventory and item-organization system inspired by the useful functionality
+of FCO Item Saver and Auto Category, rebuilt from the ground up as a simplified,
+GrimSuite-native system.
 
-Details will be established based on GrimSuite's needs and the direction of
-the project at that time.
+Core direction:
+- Provide the useful item-marking/protection functionality of FCO Item Saver
+  without reproducing its large configuration surface.
+- Provide the useful inventory categorization functionality of Auto Category
+  without reproducing unnecessary complexity.
+- Keep the system opinionated, lightweight, and easy to understand.
+- Integrate naturally with the GrimSuite UI framework introduced in v2.
+- Integrate with Grim Wardrobe and other GrimSuite systems where useful without
+  creating unnecessary coupling.
+
+FCO Item Saver-inspired functionality:
+- Simple user-defined item markers/tags.
+- Useful role or purpose markers such as Damage, Tank, Healer, Sell, and Decon.
+- Clear visual markers on items.
+- Simple bottom-of-inventory marker/filter controls for showing or hiding marker
+  categories when desired.
+- Optional protection/warning behavior for marked items.
+- Avoid reproducing FCO Item Saver's large settings system or hardcoding the
+  author's personal marking rules.
+
+Auto Category-inspired functionality:
+- Automatic inventory categorization using a streamlined category system.
+- Keep categories useful and predictable rather than exposing unnecessary
+  configuration.
+- Allow categories to work naturally with GrimSuite's item markers and filters.
+- Preserve a clean inventory presentation without requiring users to manage a
+  large hierarchy of category settings.
+
+Design philosophy:
+GrimSuite Inventory should provide the parts of FCO Item Saver and Auto Category
+that are genuinely useful in everyday play while removing configuration overhead.
+The goal is not to recreate either addon feature-for-feature; it is to provide a
+simpler, cohesive inventory system that fits GrimSuite's overall philosophy.
 
 
 ## v5.x — Future Development
