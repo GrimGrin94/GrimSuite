@@ -675,6 +675,11 @@ local STACK_EFFECT_BY_ABILITY = {
 
 local CRUX_EFFECT_ID = 184220
 
+-- Crystal Fragments uses a hidden proc/passive effect to signal the empowered
+-- instant-cast state. Keep the proc state separately from normal stack counts.
+local CRYSTAL_FRAGMENTS_EFFECT_ID = 46327
+local CRYSTAL_FRAGMENTS_ABILITY_ID = 114716
+
 -- Crux is a shared resource, not a stack counter that belongs on every
 -- Arcanist skill that generates or consumes it. GrimSuite only displays the
 -- Crux count on Fatecarver and its two morphs.
@@ -712,6 +717,10 @@ local function IsNecroSkullAbility(abilityId)
         or abilityId == 117637 or abilityId == 123718 or abilityId == 123719
         or abilityId == 117624 or abilityId == 123699 or abilityId == 123704
 end
+
+local CRUX_STACK_EFFECTS = {
+    [CRUX_EFFECT_ID] = true,
+}
 
 local function GetLivePlayerStack(effectId, trackedEffects)
     if not trackedEffects[effectId] then
@@ -859,6 +868,17 @@ local function IsBoneyardAbility(abilityId)
     return BONEYARD_ABILITIES[abilityId] == true
 end
 
+local HAUNTING_CURSE_DURATION = 12
+local HAUNTING_CURSE_ABILITIES = {
+    [24324] = true,
+    [24326] = true,
+    [24330] = true,
+}
+
+local function IsHauntingCurseAbility(abilityId)
+    return HAUNTING_CURSE_ABILITIES[abilityId] == true
+end
+
 local function StartBoneyardTimer(slot, category, abilityId)
     if not IsBoneyardAbility(abilityId) then return end
 
@@ -871,6 +891,22 @@ local function StartBoneyardTimer(slot, category, abilityId)
     categoryCache[slot] = {
         abilityId = abilityId,
         expiresAt = GetGameTimeSeconds() + BONEYARD_DURATION,
+        fixedDuration = true,
+    }
+end
+
+local function StartHauntingCurseTimer(slot, category, abilityId)
+    if not IsHauntingCurseAbility(abilityId) then return end
+
+    local categoryCache = SLOT_EFFECT_TIMER_CACHE[category]
+    if not categoryCache then
+        categoryCache = {}
+        SLOT_EFFECT_TIMER_CACHE[category] = categoryCache
+    end
+
+    categoryCache[slot] = {
+        abilityId = abilityId,
+        expiresAt = GetGameTimeSeconds() + HAUNTING_CURSE_DURATION,
         fixedDuration = true,
     }
 end
@@ -903,6 +939,23 @@ local function GetSlotEffectRemaining(slot, category)
     -- BEFORE consulting the action-slot effect API so an extended buff can
     -- never replace the hard 10s ground-effect timer.
     if IsBoneyardAbility(abilityId) then
+        if cached
+            and cached.abilityId == abilityId
+            and cached.fixedDuration
+            and cached.expiresAt > now
+        then
+            return cached.expiresAt - now
+        end
+
+        categoryCache[slot] = nil
+        return nil
+    end
+
+    -- Haunting Curse is a two-hit mechanic with a 12-second full lifecycle.
+    -- Track that full player-useful window directly instead of allowing the
+    -- generic action-slot effect API to swap to an intermediate effect between
+    -- the first and second explosions.
+    if IsHauntingCurseAbility(abilityId) then
         if cached
             and cached.abilityId == abilityId
             and cached.fixedDuration
@@ -949,7 +1002,86 @@ local function GetSlotEffectRemaining(slot, category)
     return nil
 end
 
+local function IsTentacularDreadAbility(abilityId)
+    if not abilityId or abilityId <= 0 or not GetAbilityName then
+        return false
+    end
+
+    local ok, name = pcall(GetAbilityName, abilityId)
+    if not ok or not name then
+        return false
+    end
+
+    name = zo_strlower(tostring(name))
+    return string.find(name, "tentacular dread", 1, true) ~= nil
+end
+
+local function IsCrystalFragmentsAbility(abilityId)
+    return abilityId == CRYSTAL_FRAGMENTS_ABILITY_ID
+end
+
+local function ReadCrystalFragmentsProcState()
+    for i = 1, GetNumBuffs("player") do
+        local _, _, _, _, _, _, _, _, _, _, buffAbilityId = GetUnitBuffInfo("player", i)
+        if buffAbilityId == CRYSTAL_FRAGMENTS_EFFECT_ID then
+            return true
+        end
+    end
+    return false
+end
+
+-- Forward declaration: Crystal Fragments glow refresh is defined before
+-- the shared glow renderer itself.
+local UpdateSlotGlow
+
+local function UpdateCrystalFragmentsGlowForBar(controls, category)
+    if not controls then return end
+
+    for slot = MIN_SLOT, MAX_SLOT do
+        local data = controls[slot]
+        if data and data.glow then
+            local abilityId = GetAbilityForSlot(slot, category)
+            if IsCrystalFragmentsAbility(abilityId) then
+                -- Crystal Fragments' proc is a shared player state. Refresh
+                -- both weapon bars immediately instead of waiting for a swap.
+                UpdateSlotGlow(data, slot, category, false, false)
+            end
+        end
+    end
+end
+
+local function GetCurrentCrux()
+    local liveStack = GetLivePlayerStack(CRUX_EFFECT_ID, CRUX_STACK_EFFECTS)
+    if liveStack ~= nil then
+        return liveStack
+    end
+
+    local entry = ActionBar.effectStacks[CRUX_EFFECT_ID]
+    if not entry then return 0 end
+
+    local now = GetGameTimeSeconds()
+    if entry.endTime and entry.endTime > 0 and entry.endTime <= now then
+        ActionBar.effectStacks[CRUX_EFFECT_ID] = nil
+        return 0
+    end
+
+    return tonumber(entry.stack) or 0
+end
+
 local function IsStackProcReady(abilityId)
+    -- Tentacular Dread becomes a GrimSuite ready-state glow at 3 Crux.
+    -- Crux remains an informational shared resource and is not displayed as
+    -- a stack counter on the Tentacular Dread icon.
+    if IsTentacularDreadAbility(abilityId) then
+        return GetCurrentCrux() >= 3
+    end
+
+    -- Crystal Fragments becomes ready when its hidden proc/passive effect is
+    -- active. This is a state-based proc, not a stack counter.
+    if IsCrystalFragmentsAbility(abilityId) then
+        return ActionBar.crystalFragmentsReady == true
+    end
+
     -- Fatecarver becomes ready to cast at 3 Crux. Crux is a shared resource,
     -- so it is handled separately from the normal per-ability stack map.
     if IsFatecarverAbility(abilityId) then
@@ -982,7 +1114,7 @@ local function IsSimmeringFrenzyAbility(abilityId)
         or string.find(name, "shimmering frenzy", 1, true) ~= nil
 end
 
-local function UpdateSlotGlow(data, slot, category, active, ultimateReady)
+UpdateSlotGlow = function(data, slot, category, active, ultimateReady)
     if not data or not data.glow then return end
     local abilityId = GetAbilityForSlot(slot, category)
     local procReady = abilityId > 0 and IsStackProcReady(abilityId)
@@ -1002,6 +1134,23 @@ local function UpdateSlotGlow(data, slot, category, active, ultimateReady)
         data.glow:SetAlpha(ultimateReady and 1.0 or 0.95)
         if data.outerGlow then
             data.outerGlow:SetAlpha(ultimateReady and 0.75 or 0.58)
+        end
+    end
+end
+
+local function UpdateTentacularDreadGlowForBar(controls, category)
+    if not controls then return end
+
+    for slot = MIN_SLOT, MAX_SLOT do
+        local data = controls[slot]
+        if data and data.glow then
+            local abilityId = GetAbilityForSlot(slot, category)
+            if IsTentacularDreadAbility(abilityId) then
+                -- Crux is shared between weapon bars. Refresh Tentacular Dread
+                -- on inactive bars too, so the ready glow appears immediately
+                -- when the third Crux is gained instead of waiting for a bar swap.
+                UpdateSlotGlow(data, slot, category, false, false)
+            end
         end
     end
 end
@@ -1196,8 +1345,12 @@ local function UpdateActiveBarGlows()
         end
     end
 
-    -- Crux is shared between bars. Keep Fatecarver synchronized on the inactive
-    -- bar as well.
+    -- Crux is shared between bars. Keep both Crux-driven ready states
+    -- synchronized on inactive bars as well.
+    UpdateTentacularDreadGlowForBar(ActionBar.frontControls, HOTBAR_CATEGORY_PRIMARY)
+    UpdateTentacularDreadGlowForBar(ActionBar.backbarControls, HOTBAR_CATEGORY_BACKUP)
+    UpdateCrystalFragmentsGlowForBar(ActionBar.frontControls, HOTBAR_CATEGORY_PRIMARY)
+    UpdateCrystalFragmentsGlowForBar(ActionBar.backbarControls, HOTBAR_CATEGORY_BACKUP)
     UpdateFatecarverGlowForBar(ActionBar.frontControls, HOTBAR_CATEGORY_PRIMARY)
     UpdateFatecarverGlowForBar(ActionBar.backbarControls, HOTBAR_CATEGORY_BACKUP)
 
@@ -1222,6 +1375,17 @@ end
 local function TrackPlayerEffect(eventCode, change, effectSlot, effectName, unitTag, beginTime, endTime, stackCount, iconName, buffType, effectType, abilityType, statusEffectType, unitName, unitId, abilityId, sourceType)
     if unitTag ~= "player" then return end
     if not abilityId or abilityId <= 0 then return end
+
+    -- Crystal Fragments proc is a player-wide state. Track the hidden proc
+    -- directly and immediately refresh both bars.
+    if abilityId == CRYSTAL_FRAGMENTS_EFFECT_ID then
+        local active = change ~= EFFECT_RESULT_FADED
+            and (not endTime or endTime == 0 or endTime > GetGameTimeSeconds())
+        ActionBar.crystalFragmentsReady = active
+        UpdateCrystalFragmentsGlowForBar(ActionBar.frontControls, HOTBAR_CATEGORY_PRIMARY)
+        UpdateCrystalFragmentsGlowForBar(ActionBar.backbarControls, HOTBAR_CATEGORY_BACKUP)
+        return
+    end
 
     -- Crux is a shared player effect. Track it directly by its effect ID,
     -- rather than requiring Crux itself to be the slotted ability.
@@ -2002,6 +2166,7 @@ function ActionBar:Initialize()
         local category = GetActiveHotbarCategory()
         local abilityId = GetAbilityForSlot(slot, category)
         StartBoneyardTimer(slot, category, abilityId)
+        StartHauntingCurseTimer(slot, category, abilityId)
 
         local controls = category == HOTBAR_CATEGORY_PRIMARY and self.frontControls or self.backbarControls
         local data = controls and controls[slot]
@@ -2045,13 +2210,13 @@ function ActionBar:Initialize()
 
     -- Player effect changes provide stack counts. We deliberately only retain
     -- effects whose ability is actually slotted on one of GrimSuite's bars.
+    ActionBar.crystalFragmentsReady = ReadCrystalFragmentsProcState()
     EM:RegisterForEvent(GS.name .. "_AB_Effects", EVENT_EFFECT_CHANGED, TrackPlayerEffect)
 
     -- Action-slot effects are the authoritative source for timers. Update at
     -- a modest rate so the text moves smoothly without rebuilding the bars.
     EM:RegisterForUpdate(GS.name .. "_AB_EffectDisplay", 100, function()
         if self.initialized then
-            ReconcilePlayerStacks()
             ReconcileBannerState()
             UpdateEffectDisplays()
             UpdateActiveBarGlows()
