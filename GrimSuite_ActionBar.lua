@@ -87,6 +87,16 @@ ActionBar.backbarRoot = nil
 ActionBar.frontControls = {}
 ActionBar.backbarControls = {}
 
+-- Optional standalone stack tracker. The tracker shows one entry per supported
+-- stack type, but only when a qualifying skill is slotted on either weapon bar.
+-- The same stack type is never duplicated just because the skill appears on
+-- both bars; this also keeps subclassing combinations predictable.
+ActionBar.showStackTracker = true
+ActionBar.stackTrackerUnlocked = false
+ActionBar.stackTrackerHUDVisible = true
+ActionBar.stackTrackerRoot = nil
+ActionBar.stackTrackerEntries = {}
+
 -- LibAddonMenu configuration + saved layout position.
 -- LibAddonMenu is a required dependency for GrimSuite's settings UI.
 local POSITION_SV_NAME = "GrimSuiteActionBarSavedVars"
@@ -115,7 +125,32 @@ local POSITION_DEFAULTS = {
     stackOffsetY = 0,
 }
 
+local STACK_TRACKER_SV_NAME = "GrimSuiteStackTrackerSavedVars"
+local STACK_TRACKER_SV_VERSION = 2
+local STACK_TRACKER_DEFAULTS = {
+    showStackTracker = true,
+    unlocked = false,
+    iconSize = 50,
+    textSize = 45,
+    showBoundArmaments = true,
+    showCrux = true,
+    showBow = true,
+    boundArmamentsX = -54,
+    boundArmamentsY = 250,
+    cruxX = 0,
+    cruxY = 250,
+    bowX = 54,
+    bowY = 250,
+}
+
+local STACK_TRACKER_MIN_ICON_SIZE = 30
+local STACK_TRACKER_MAX_ICON_SIZE = 100
+local STACK_TRACKER_MIN_TEXT_SIZE = 10
+local STACK_TRACKER_MAX_TEXT_SIZE = 80
+local STACK_TRACKER_FRAME_PADDING = 2
+
 local positionSV = nil
+local stackTrackerSV = nil
 local LAM = nil
 local dragState = {
     dragging = false,
@@ -189,6 +224,24 @@ end
 
 local function GetStackFont()
     return BuildOverlayFont(ActionBar.stackFont, ActionBar.stackSize, ActionBar.stackOutline)
+end
+
+local function GetStackTrackerIconSize()
+    return math.max(
+        STACK_TRACKER_MIN_ICON_SIZE,
+        math.min(STACK_TRACKER_MAX_ICON_SIZE, tonumber(ActionBar.stackTrackerIconSize) or STACK_TRACKER_DEFAULTS.iconSize)
+    )
+end
+
+local function GetStackTrackerTextSize()
+    return math.max(
+        STACK_TRACKER_MIN_TEXT_SIZE,
+        math.min(STACK_TRACKER_MAX_TEXT_SIZE, tonumber(ActionBar.stackTrackerTextSize) or STACK_TRACKER_DEFAULTS.textSize)
+    )
+end
+
+local function GetStackTrackerFont()
+    return BuildOverlayFont("Univers 67", GetStackTrackerTextSize(), "thick-outline")
 end
 
 local function ApplyOverlayTextStyles()
@@ -722,6 +775,11 @@ local CRUX_STACK_EFFECTS = {
     [CRUX_EFFECT_ID] = true,
 }
 
+-- Forward declarations: these helpers are defined later in the file but are
+-- used by the stack tracker above them.
+local IsTentacularDreadAbility
+local GetCurrentCrux
+
 local function GetLivePlayerStack(effectId, trackedEffects)
     if not trackedEffects[effectId] then
         return nil
@@ -773,6 +831,362 @@ local function FindTrackedStack(abilityId)
         return nil
     end
     return entry.stack
+end
+
+---------------------------------------------------------------------
+-- Optional standalone stack tracker
+--
+-- Each supported stack type is represented once. An entry is shown only when
+-- one of its qualifying skills is present on either GrimSuite weapon bar.
+-- This keeps the tracker useful for subclassing without duplicating the same
+-- stack counter when a skill appears on both bars.
+---------------------------------------------------------------------
+
+local BOUND_ARMAMENTS_ABILITY_ID = 24165
+
+local BOW_STACK_ABILITIES = {
+    [61902] = true, -- Grim Focus
+    [61919] = true, -- Merciless Resolve
+    [61927] = true, -- Relentless Focus
+}
+
+local function IsBowStackAbility(abilityId)
+    return BOW_STACK_ABILITIES[abilityId] == true
+end
+
+local function GetTrackerSlottedAbility(kind)
+    local categories = { HOTBAR_CATEGORY_PRIMARY, HOTBAR_CATEGORY_BACKUP }
+
+    -- Prefer the currently active bar so the displayed icon matches the bar
+    -- the player is currently using when a tracked skill exists there.
+    local activeCategory = GetActiveHotbarCategory()
+    if activeCategory == HOTBAR_CATEGORY_PRIMARY or activeCategory == HOTBAR_CATEGORY_BACKUP then
+        categories = {
+            activeCategory,
+            activeCategory == HOTBAR_CATEGORY_PRIMARY
+                and HOTBAR_CATEGORY_BACKUP or HOTBAR_CATEGORY_PRIMARY,
+        }
+    end
+
+    for _, category in ipairs(categories) do
+        for slot = MIN_SLOT, MAX_SLOT do
+            local abilityId = GetAbilityForSlot(slot, category)
+            if abilityId and abilityId > 0 then
+                if kind == "BoundArmaments" and abilityId == BOUND_ARMAMENTS_ABILITY_ID then
+                    return abilityId
+                elseif kind == "Crux" and (IsFatecarverAbility(abilityId) or IsTentacularDreadAbility(abilityId)) then
+                    return abilityId
+                elseif kind == "Bow" and IsBowStackAbility(abilityId) then
+                    return abilityId
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function GetStackTrackerCount(kind, abilityId)
+    if kind == "BoundArmaments" then
+        return math.max(0, tonumber(FindTrackedStack(BOUND_ARMAMENTS_ABILITY_ID)) or 0)
+    elseif kind == "Crux" then
+        return math.max(0, tonumber(GetCurrentCrux()) or 0)
+    elseif kind == "Bow" then
+        return math.max(0, tonumber(FindTrackedStack(abilityId)) or 0)
+    end
+
+    return 0
+end
+
+local STACK_TRACKER_DEFINITIONS = {
+    {
+        key = "BoundArmaments",
+        name = "Bound Armaments",
+        maxStacks = 4,
+    },
+    {
+        key = "Crux",
+        name = "Crux",
+        maxStacks = 3,
+    },
+    {
+        key = "Bow",
+        name = "Grim Focus / Resolve",
+        maxStacks = 5,
+    },
+}
+
+local stackTrackerDragState = {
+    dragging = false,
+    key = nil,
+    startMouseX = 0,
+    startMouseY = 0,
+    startX = 0,
+    startY = 0,
+}
+
+local function GetStackTrackerVisibilityKey(kind)
+    if kind == "BoundArmaments" then return "showBoundArmaments" end
+    if kind == "Crux" then return "showCrux" end
+    if kind == "Bow" then return "showBow" end
+    return nil
+end
+
+local function GetStackTrackerPositionKeys(kind)
+    if kind == "BoundArmaments" then return "boundArmamentsX", "boundArmamentsY" end
+    if kind == "Crux" then return "cruxX", "cruxY" end
+    if kind == "Bow" then return "bowX", "bowY" end
+    return nil, nil
+end
+
+local function IsStackTrackerVisible(kind)
+    local key = GetStackTrackerVisibilityKey(kind)
+    if not key then return false end
+    return ActionBar[key] == true
+end
+
+local function GetStackTrackerPosition(kind)
+    local xKey, yKey = GetStackTrackerPositionKeys(kind)
+    if not xKey then return 0, 250 end
+
+    return tonumber(ActionBar[xKey]) or tonumber(STACK_TRACKER_DEFAULTS[xKey]) or 0,
+        tonumber(ActionBar[yKey]) or tonumber(STACK_TRACKER_DEFAULTS[yKey]) or 250
+end
+
+local function SaveStackTrackerSetting(key, value)
+    ActionBar[key] = value
+    if stackTrackerSV then
+        stackTrackerSV[key] = value
+    end
+end
+
+local function SaveStackTrackerPosition(kind)
+    if not stackTrackerSV then return end
+
+    local xKey, yKey = GetStackTrackerPositionKeys(kind)
+    if not xKey then return end
+
+    stackTrackerSV[xKey] = tonumber(ActionBar[xKey]) or STACK_TRACKER_DEFAULTS[xKey]
+    stackTrackerSV[yKey] = tonumber(ActionBar[yKey]) or STACK_TRACKER_DEFAULTS[yKey]
+end
+
+local function AnchorStackTrackerEntry(kind)
+    local root = ActionBar.stackTrackerRoot
+    local data = ActionBar.stackTrackerEntries[kind]
+    if not root or not data or not data.frame then return end
+
+    local x, y = GetStackTrackerPosition(kind)
+    data.frame:ClearAnchors()
+    data.frame:SetAnchor(CENTER, root, CENTER, x, y)
+end
+
+local function AnchorAllStackTrackerEntries()
+    for _, definition in ipairs(STACK_TRACKER_DEFINITIONS) do
+        AnchorStackTrackerEntry(definition.key)
+    end
+end
+
+local function UpdateStackTrackerDragEnabled(enabled)
+    enabled = enabled == true
+
+    for _, data in pairs(ActionBar.stackTrackerEntries or {}) do
+        data.frame:SetMouseEnabled(enabled)
+    end
+end
+
+local function BeginStackTrackerDrag(kind)
+    if not ActionBar.stackTrackerUnlocked then return end
+
+    local data = ActionBar.stackTrackerEntries[kind]
+    if not data or data.frame:IsHidden() then return end
+
+    local x, y = GetUIMousePosition()
+    if not x or not y then return end
+
+    local startX, startY = GetStackTrackerPosition(kind)
+
+    stackTrackerDragState.dragging = true
+    stackTrackerDragState.key = kind
+    stackTrackerDragState.startMouseX = x
+    stackTrackerDragState.startMouseY = y
+    stackTrackerDragState.startX = startX
+    stackTrackerDragState.startY = startY
+
+    EM:UnregisterForUpdate(GS.name .. "_AB_StackTrackerDrag")
+    EM:RegisterForUpdate(GS.name .. "_AB_StackTrackerDrag", 16, function()
+        if not stackTrackerDragState.dragging or not ActionBar.stackTrackerUnlocked then
+            EM:UnregisterForUpdate(GS.name .. "_AB_StackTrackerDrag")
+            return
+        end
+
+        local mouseX, mouseY = GetUIMousePosition()
+        if not mouseX or not mouseY then return end
+
+        local key = stackTrackerDragState.key
+        if not key then
+            EM:UnregisterForUpdate(GS.name .. "_AB_StackTrackerDrag")
+            return
+        end
+
+        local xKey, yKey = GetStackTrackerPositionKeys(key)
+        if not xKey then
+            EM:UnregisterForUpdate(GS.name .. "_AB_StackTrackerDrag")
+            return
+        end
+
+        ActionBar[xKey] = stackTrackerDragState.startX + (mouseX - stackTrackerDragState.startMouseX)
+        ActionBar[yKey] = stackTrackerDragState.startY + (mouseY - stackTrackerDragState.startMouseY)
+
+        AnchorStackTrackerEntry(key)
+    end)
+end
+
+local function EndStackTrackerDrag(kind)
+    if not stackTrackerDragState.dragging then return end
+    if kind and stackTrackerDragState.key ~= kind then return end
+
+    local key = stackTrackerDragState.key
+    stackTrackerDragState.dragging = false
+    stackTrackerDragState.key = nil
+    EM:UnregisterForUpdate(GS.name .. "_AB_StackTrackerDrag")
+
+    if key then
+        SaveStackTrackerPosition(key)
+    end
+end
+
+local function CreateStackTracker()
+    if ActionBar.stackTrackerRoot then return end
+
+    local root = WM:CreateTopLevelWindow("GrimSuiteAB_StackTracker")
+    root:SetAnchorFill(GuiRoot)
+    root:SetMovable(false)
+    root:SetClampedToScreen(true)
+    root:SetDrawTier(DT_LOW)
+    root:SetMouseEnabled(false)
+
+    ActionBar.stackTrackerRoot = root
+    ActionBar.stackTrackerEntries = {}
+
+    for _, definition in ipairs(STACK_TRACKER_DEFINITIONS) do
+        local trackerKey = definition.key
+        local frame = WM:CreateControl(
+            "GrimSuiteAB_StackTracker_" .. definition.key .. "_Frame",
+            root,
+            CT_BACKDROP
+        )
+        frame:SetDimensions(GetStackTrackerIconSize(), GetStackTrackerIconSize())
+        frame:SetCenterColor(0.008, 0.008, 0.008, 0.48)
+        frame:SetEdgeColor(unpack(FRAME_EDGE))
+        frame:SetEdgeTexture("EsoUI/Art/Tooltips/UI-Border.dds", 16, 16, 2, 0)
+        frame:SetDrawLevel(20)
+        frame:SetMouseEnabled(false)
+
+        local icon = WM:CreateControl(
+            "GrimSuiteAB_StackTracker_" .. definition.key .. "_Icon",
+            frame,
+            CT_TEXTURE
+        )
+        icon:SetAnchor(TOPLEFT, frame, TOPLEFT, STACK_TRACKER_FRAME_PADDING, STACK_TRACKER_FRAME_PADDING)
+        icon:SetAnchor(BOTTOMRIGHT, frame, BOTTOMRIGHT, -STACK_TRACKER_FRAME_PADDING, -STACK_TRACKER_FRAME_PADDING)
+        icon:SetDrawLevel(21)
+        icon:SetMouseEnabled(false)
+
+        local stack = WM:CreateControl(
+            "GrimSuiteAB_StackTracker_" .. definition.key .. "_Stack",
+            frame,
+            CT_LABEL
+        )
+        stack:SetFont(GetStackTrackerFont())
+        stack:SetAnchor(CENTER, frame, CENTER, 0, 0)
+        stack:SetHorizontalAlignment(TEXT_ALIGN_CENTER)
+        stack:SetVerticalAlignment(TEXT_ALIGN_CENTER)
+        stack:SetColor(unpack(STACK_COLOR))
+        stack:SetDrawLevel(22)
+        stack:SetText("")
+        stack:SetMouseEnabled(false)
+
+        frame:SetHandler("OnMouseDown", function(_, button)
+            if button == MOUSE_BUTTON_INDEX_LEFT then
+                BeginStackTrackerDrag(trackerKey)
+            end
+        end)
+
+        frame:SetHandler("OnMouseUp", function(_, button)
+            if button == MOUSE_BUTTON_INDEX_LEFT then
+                EndStackTrackerDrag(trackerKey)
+            end
+        end)
+
+        ActionBar.stackTrackerEntries[definition.key] = {
+            definition = definition,
+            frame = frame,
+            icon = icon,
+            stack = stack,
+        }
+    end
+
+    AnchorAllStackTrackerEntries()
+end
+
+local function ApplyStackTrackerAppearance()
+    local iconSize = GetStackTrackerIconSize()
+    local textFont = GetStackTrackerFont()
+
+    for _, definition in ipairs(STACK_TRACKER_DEFINITIONS) do
+        local data = ActionBar.stackTrackerEntries[definition.key]
+        if data then
+            data.frame:SetDimensions(iconSize, iconSize)
+            data.icon:ClearAnchors()
+            data.icon:SetAnchor(TOPLEFT, data.frame, TOPLEFT, STACK_TRACKER_FRAME_PADDING, STACK_TRACKER_FRAME_PADDING)
+            data.icon:SetAnchor(BOTTOMRIGHT, data.frame, BOTTOMRIGHT, -STACK_TRACKER_FRAME_PADDING, -STACK_TRACKER_FRAME_PADDING)
+            data.stack:SetFont(textFont)
+            data.stack:ClearAnchors()
+            data.stack:SetAnchor(CENTER, data.frame, CENTER, 0, 0)
+        end
+    end
+
+    AnchorAllStackTrackerEntries()
+end
+
+local function UpdateStackTracker()
+    if not ActionBar.stackTrackerRoot then return end
+
+    local count = 0
+    local shouldShow = ActionBar.showStackTracker and ActionBar.stackTrackerHUDVisible
+
+    for _, definition in ipairs(STACK_TRACKER_DEFINITIONS) do
+        local data = ActionBar.stackTrackerEntries[definition.key]
+        local abilityId = shouldShow and IsStackTrackerVisible(definition.key)
+            and GetTrackerSlottedAbility(definition.key) or nil
+
+        if data and abilityId then
+            data.icon:SetTexture(GetAbilityIcon(abilityId))
+            data.stack:SetFont(GetStackTrackerFont())
+            data.stack:SetText(tostring(GetStackTrackerCount(definition.key, abilityId)))
+            data.frame:SetHidden(false)
+            count = count + 1
+        elseif data then
+            data.frame:SetHidden(true)
+        end
+    end
+
+    ActionBar.stackTrackerRoot:SetHidden(count == 0 or not shouldShow)
+    UpdateStackTrackerDragEnabled(ActionBar.stackTrackerUnlocked and count > 0)
+end
+
+local function ResetStackTrackerPositions()
+    for _, definition in ipairs(STACK_TRACKER_DEFINITIONS) do
+        local xKey, yKey = GetStackTrackerPositionKeys(definition.key)
+        if xKey then
+            ActionBar[xKey] = STACK_TRACKER_DEFAULTS[xKey]
+            ActionBar[yKey] = STACK_TRACKER_DEFAULTS[yKey]
+            SaveStackTrackerPosition(definition.key)
+        end
+    end
+
+    AnchorAllStackTrackerEntries()
+    UpdateStackTracker()
 end
 
 -- FAB treats Banner Bearer effects as one shared toggle state. Keep the
@@ -1002,7 +1416,12 @@ local function GetSlotEffectRemaining(slot, category)
     return nil
 end
 
-local function IsTentacularDreadAbility(abilityId)
+IsTentacularDreadAbility = function(abilityId)
+    -- Known current Tentacular Dread ability ID.
+    if abilityId == 185823 then
+        return true
+    end
+
     if not abilityId or abilityId <= 0 or not GetAbilityName then
         return false
     end
@@ -1050,7 +1469,7 @@ local function UpdateCrystalFragmentsGlowForBar(controls, category)
     end
 end
 
-local function GetCurrentCrux()
+GetCurrentCrux = function()
     local liveStack = GetLivePlayerStack(CRUX_EFFECT_ID, CRUX_STACK_EFFECTS)
     if liveStack ~= nil then
         return liveStack
@@ -1322,6 +1741,7 @@ local function UpdateEffectDisplays()
     -- Ultimate is a shared visual slot in GrimSuite. Its timer may come from
     -- either weapon bar, so render it only after checking both categories.
     UpdateUltimateTimerDisplay()
+    UpdateStackTracker()
 end
 
 local function UpdateActiveBarGlows()
@@ -1445,6 +1865,8 @@ local function TrackPlayerEffect(eventCode, change, effectSlot, effectName, unit
         -- independent. A zero stack count means simply don't draw a counter.
         ActionBar.effectStacks[trackedEffectId or abilityId] = nil
     end
+
+    UpdateStackTracker()
 end
 
 local function ReconcilePlayerStacks()
@@ -2010,12 +2432,161 @@ local function RegisterLibAddonMenu()
         },
     }
 
+    local stackTrackerPanelName = GS.name .. "_StackTracker_Settings"
+    local stackTrackerPanelData = {
+        type = "panel",
+        name = "GrimSuite Stack Tracker",
+        displayName = "GrimSuite Stack Tracker",
+        author = "@GrimGrin94",
+        version = GS.version,
+        registerForRefresh = true,
+        registerForDefaults = true,
+    }
+
+    local stackTrackerOptions = {
+        {
+            type = "header",
+            name = "Stack Tracker",
+        },
+        {
+            type = "checkbox",
+            name = "Show Stack Tracker",
+            tooltip = "Enable the standalone Stack Tracker system.",
+            getFunc = function()
+                return ActionBar.showStackTracker == true
+            end,
+            setFunc = function(value)
+                SaveStackTrackerSetting("showStackTracker", value == true)
+                UpdateStackTracker()
+            end,
+            default = STACK_TRACKER_DEFAULTS.showStackTracker,
+            width = "full",
+        },
+        {
+            type = "checkbox",
+            name = "Unlock Stack Tracker",
+            tooltip = "When enabled, drag any visible stack tracker with left click to move that tracker independently.",
+            getFunc = function()
+                return ActionBar.stackTrackerUnlocked == true
+            end,
+            setFunc = function(value)
+                ActionBar.stackTrackerUnlocked = value == true
+                if stackTrackerSV then
+                    stackTrackerSV.unlocked = ActionBar.stackTrackerUnlocked
+                end
+                UpdateStackTrackerDragEnabled(ActionBar.stackTrackerUnlocked)
+            end,
+            default = STACK_TRACKER_DEFAULTS.unlocked,
+            width = "full",
+        },
+        {
+            type = "slider",
+            name = "Icon Size",
+            tooltip = "Changes the icon size for all Stack Tracker entries.",
+            min = STACK_TRACKER_MIN_ICON_SIZE,
+            max = STACK_TRACKER_MAX_ICON_SIZE,
+            step = 1,
+            getFunc = function() return GetStackTrackerIconSize() end,
+            setFunc = function(value)
+                local size = tonumber(value) or STACK_TRACKER_DEFAULTS.iconSize
+                ActionBar.stackTrackerIconSize = size
+                if stackTrackerSV then
+                    stackTrackerSV.iconSize = size
+                end
+                ApplyStackTrackerAppearance()
+                UpdateStackTracker()
+            end,
+            default = STACK_TRACKER_DEFAULTS.iconSize,
+        },
+        {
+            type = "slider",
+            name = "Text Size",
+            tooltip = "Changes the stack-count text size for all Stack Tracker entries.",
+            min = STACK_TRACKER_MIN_TEXT_SIZE,
+            max = STACK_TRACKER_MAX_TEXT_SIZE,
+            step = 1,
+            getFunc = function() return GetStackTrackerTextSize() end,
+            setFunc = function(value)
+                local size = tonumber(value) or STACK_TRACKER_DEFAULTS.textSize
+                ActionBar.stackTrackerTextSize = size
+                if stackTrackerSV then
+                    stackTrackerSV.textSize = size
+                end
+                ApplyStackTrackerAppearance()
+                UpdateStackTracker()
+            end,
+            default = STACK_TRACKER_DEFAULTS.textSize,
+        },
+        {
+            type = "description",
+            text = "Each tracker keeps its own position. Enable Unlock Stack Tracker, then drag the individual tracker you want to move.",
+        },
+        {
+            type = "header",
+            name = "Bound Armaments",
+        },
+        {
+            type = "checkbox",
+            name = "Show Bound Armaments",
+            tooltip = "Show the Bound Armaments stack tracker when the ability is slotted on either weapon bar.",
+            getFunc = function() return ActionBar.showBoundArmaments == true end,
+            setFunc = function(value)
+                SaveStackTrackerSetting("showBoundArmaments", value == true)
+                UpdateStackTracker()
+            end,
+            default = STACK_TRACKER_DEFAULTS.showBoundArmaments,
+            width = "full",
+        },
+        {
+            type = "header",
+            name = "Crux",
+        },
+        {
+            type = "checkbox",
+            name = "Show Crux",
+            tooltip = "Show the Crux tracker when Fatecarver or Tentacular Dread is slotted on either weapon bar.",
+            getFunc = function() return ActionBar.showCrux == true end,
+            setFunc = function(value)
+                SaveStackTrackerSetting("showCrux", value == true)
+                UpdateStackTracker()
+            end,
+            default = STACK_TRACKER_DEFAULTS.showCrux,
+            width = "full",
+        },
+        {
+            type = "header",
+            name = "Nightblade Bow",
+        },
+        {
+            type = "checkbox",
+            name = "Show Nightblade Bow",
+            tooltip = "Show the Nightblade spectral-bow stack tracker when Grim Focus, Merciless Resolve, or Relentless Focus is slotted.",
+            getFunc = function() return ActionBar.showBow == true end,
+            setFunc = function(value)
+                SaveStackTrackerSetting("showBow", value == true)
+                UpdateStackTracker()
+            end,
+            default = STACK_TRACKER_DEFAULTS.showBow,
+            width = "full",
+        },
+        {
+            type = "button",
+            name = "Reset Stack Tracker Positions",
+            tooltip = "Restore the default position of Bound Armaments, Crux, and Nightblade Bow.",
+            func = ResetStackTrackerPositions,
+            width = "half",
+        },
+    }
+
     LAM:RegisterAddonPanel(panelName, panelData)
     LAM:RegisterOptionControls(panelName, options)
+    LAM:RegisterAddonPanel(stackTrackerPanelName, stackTrackerPanelData)
+    LAM:RegisterOptionControls(stackTrackerPanelName, stackTrackerOptions)
 end
 
 function ActionBar:SetHUDVisible(visible)
     visible = visible == true
+    self.stackTrackerHUDVisible = visible
 
     if self.frontRoot then
         self.frontRoot:SetHidden(not (visible and self.showFrames))
@@ -2023,6 +2594,8 @@ function ActionBar:SetHUDVisible(visible)
     if self.backbarRoot then
         self.backbarRoot:SetHidden(not (visible and self.showFrames))
     end
+
+    UpdateStackTracker()
 end
 
 function ActionBar:Refresh()
@@ -2049,6 +2622,7 @@ function ActionBar:Refresh()
     -- presentation step.
     self:UpdateNativeVisualSuppression()
     UpdateEffectDisplays()
+    UpdateStackTracker()
 end
 
 function ActionBar:Initialize()
@@ -2084,6 +2658,35 @@ function ActionBar:Initialize()
     self.timerOffsetY = tonumber(positionSV.timerOffsetY) or POSITION_DEFAULTS.timerOffsetY
     self.stackOffsetX = tonumber(positionSV.stackOffsetX) or POSITION_DEFAULTS.stackOffsetX
     self.stackOffsetY = tonumber(positionSV.stackOffsetY) or POSITION_DEFAULTS.stackOffsetY
+
+    if not stackTrackerSV then
+        stackTrackerSV = ZO_SavedVars:NewAccountWide(
+            STACK_TRACKER_SV_NAME,
+            STACK_TRACKER_SV_VERSION,
+            nil,
+            STACK_TRACKER_DEFAULTS
+        )
+    end
+
+    self.showStackTracker = stackTrackerSV.showStackTracker ~= false
+    self.stackTrackerUnlocked = stackTrackerSV.unlocked == true
+    self.stackTrackerIconSize = tonumber(stackTrackerSV.iconSize) or STACK_TRACKER_DEFAULTS.iconSize
+    self.stackTrackerTextSize = tonumber(stackTrackerSV.textSize) or STACK_TRACKER_DEFAULTS.textSize
+    self.showBoundArmaments = stackTrackerSV.showBoundArmaments ~= false
+    self.showCrux = stackTrackerSV.showCrux ~= false
+    self.showBow = stackTrackerSV.showBow ~= false
+    self.boundArmamentsX = tonumber(stackTrackerSV.boundArmamentsX) or STACK_TRACKER_DEFAULTS.boundArmamentsX
+    self.boundArmamentsY = tonumber(stackTrackerSV.boundArmamentsY) or STACK_TRACKER_DEFAULTS.boundArmamentsY
+    self.cruxX = tonumber(stackTrackerSV.cruxX) or STACK_TRACKER_DEFAULTS.cruxX
+    self.cruxY = tonumber(stackTrackerSV.cruxY) or STACK_TRACKER_DEFAULTS.cruxY
+    self.bowX = tonumber(stackTrackerSV.bowX) or STACK_TRACKER_DEFAULTS.bowX
+    self.bowY = tonumber(stackTrackerSV.bowY) or STACK_TRACKER_DEFAULTS.bowY
+    self.stackTrackerHUDVisible = true
+
+    CreateStackTracker()
+    ApplyStackTrackerAppearance()
+    UpdateStackTrackerDragEnabled(self.stackTrackerUnlocked)
+    UpdateStackTracker()
 
     RegisterLibAddonMenu()
     SetDragEnabled(self.positionUnlocked)
