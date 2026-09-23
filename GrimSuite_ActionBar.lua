@@ -833,120 +833,23 @@ local READY_PROC_STACKS = {
     [123704] = 2,
 }
 
--- Some ESO action-slot timers are backed by a buff/effect associated with the
--- slotted skill rather than the skill's own visible duration. When another
--- source refreshes/re-associates that buff (for example Traveling Knife +
--- Force refreshing Minor Force while Barbed Trap is active), ESO can briefly
--- or permanently stop reporting the timer for the original slot. Keep the
--- last known expiration for that exact slot/ability as a fallback so a valid
--- timer is not erased just because the action-slot query stopped reporting it.
---
--- Boneyard is intentionally different: its action-slot effect can jump to a
--- longer buff duration when Nazaray extends the associated effect. GrimSuite's
--- Action Bar timer should represent the ground DoT itself, which is a hard 10s
--- window. Boneyard therefore gets its own cast-time expiration in the same
--- cache and ignores later buff extensions for that cast.
-local SLOT_EFFECT_TIMER_CACHE = {}
-
-local BONEYARD_DURATION = 10
-local BONEYARD_ABILITIES = {
-    -- Current Necromancer Boneyard morph IDs.
-    [40117850] = true, -- Avid Boneyard
-    [117805] = true,   -- Unnerving Boneyard
-}
-
-local function IsBoneyardAbility(abilityId)
-    return BONEYARD_ABILITIES[abilityId] == true
-end
-
-local function StartBoneyardTimer(slot, category, abilityId)
-    if not IsBoneyardAbility(abilityId) then return end
-
-    local categoryCache = SLOT_EFFECT_TIMER_CACHE[category]
-    if not categoryCache then
-        categoryCache = {}
-        SLOT_EFFECT_TIMER_CACHE[category] = categoryCache
-    end
-
-    categoryCache[slot] = {
-        abilityId = abilityId,
-        expiresAt = GetGameTimeSeconds() + BONEYARD_DURATION,
-        fixedDuration = true,
-    }
-end
-
 local function GetSlotEffectRemaining(slot, category)
     if not GetActionSlotEffectDuration or not GetActionSlotEffectTimeRemaining then
         return nil
     end
 
-    local abilityId = GetAbilityForSlot(slot, category)
-    if not abilityId or abilityId <= 0 then
-        if SLOT_EFFECT_TIMER_CACHE[category] then
-            SLOT_EFFECT_TIMER_CACHE[category][slot] = nil
-        end
-        return nil
-    end
-
-    local now = GetGameTimeSeconds()
-    local categoryCache = SLOT_EFFECT_TIMER_CACHE[category]
-    if not categoryCache then
-        categoryCache = {}
-        SLOT_EFFECT_TIMER_CACHE[category] = categoryCache
-    end
-
-    local cached = categoryCache[slot]
-
-    -- Boneyard is tracked from the actual cast window and intentionally does
-    -- not inherit later buff extensions such as Nazaray. The cast event below
-    -- refreshes this exact 10s window whenever Boneyard is recast. Do this
-    -- BEFORE consulting the action-slot effect API so an extended buff can
-    -- never replace the hard 10s ground-effect timer.
-    if IsBoneyardAbility(abilityId) then
-        if cached
-            and cached.abilityId == abilityId
-            and cached.fixedDuration
-            and cached.expiresAt > now
-        then
-            return cached.expiresAt - now
-        end
-
-        categoryCache[slot] = nil
-        return nil
-    end
-
     local okDuration, durationMs = pcall(GetActionSlotEffectDuration, slot, category)
     local okRemain, remainMs = pcall(GetActionSlotEffectTimeRemaining, slot, category)
+    if not okDuration or not okRemain then return nil end
 
     durationMs = tonumber(durationMs) or 0
     remainMs = tonumber(remainMs) or 0
+    if durationMs <= 0 or remainMs <= 0 then return nil end
 
-    if okDuration and okRemain and durationMs > 0 and remainMs > 0 then
-        local duration = durationMs / 1000
-        local remain = remainMs / 1000
-        if remain <= math.max(duration, 0.1) + 0.25 then
-            categoryCache[slot] = {
-                abilityId = abilityId,
-                expiresAt = now + remain,
-            }
-            return remain
-        end
-    end
-
-    -- If ESO stopped reporting the effect but the same ability is still in the
-    -- slot and our last confirmed timer has not expired, continue counting down
-    -- from that previously observed expiration. A fresh ESO value always wins
-    -- and refreshes the cache above for normal skill timers.
-
-    if cached
-        and cached.abilityId == abilityId
-        and cached.expiresAt > now
-    then
-        return cached.expiresAt - now
-    end
-
-    categoryCache[slot] = nil
-    return nil
+    local duration = durationMs / 1000
+    local remain = remainMs / 1000
+    if remain > math.max(duration, 0.1) + 0.25 then return nil end
+    return remain
 end
 
 local function IsStackProcReady(abilityId)
@@ -2000,9 +1903,6 @@ function ActionBar:Initialize()
         if slot < MIN_SLOT or slot > ULT_SLOT then return end
 
         local category = GetActiveHotbarCategory()
-        local abilityId = GetAbilityForSlot(slot, category)
-        StartBoneyardTimer(slot, category, abilityId)
-
         local controls = category == HOTBAR_CATEGORY_PRIMARY and self.frontControls or self.backbarControls
         local data = controls and controls[slot]
         if data then
