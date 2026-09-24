@@ -29,6 +29,7 @@ local POTION_SIZE = 70
 local SLOT_GAP = 3
 local ROW_GAP = 3
 local ULT_GAP = 10
+local UTILITY_ACTIONBAR_TIGHTEN = 32
 
 local FRAME_EDGE = { 0.62, 0.62, 0.62, 0.88 }
 local FRAME_EDGE_ACTIVE = { 0.62, 0.62, 0.62, 0.88 }
@@ -42,6 +43,7 @@ local UNUSABLE_ICON_ALPHA = 0.42
 local UNUSABLE_DESATURATION = 0.65
 local TIMER_FONT = "Univers 67|45|thick-outline"
 local STACK_FONT = "Univers 67|45|thick-outline"
+local POTION_COUNT_FONT = "Univers 67|28|thick-outline"
 local TIMER_COLOR = { 1, 1, 1, 1 }
 local STACK_COLOR = { 1, 1, 1, 1 }
 local ULT_FONT = "Univers 67|35|thick-outline"
@@ -86,6 +88,28 @@ ActionBar.frontRoot = nil
 ActionBar.backbarRoot = nil
 ActionBar.frontControls = {}
 ActionBar.backbarControls = {}
+ActionBar.frontBarIndicator = nil
+ActionBar.backBarIndicator = nil
+
+-- GrimSuite-owned utility controls.
+-- The native ESO controls remain alive for their actual input handling, but
+-- their visuals are hidden. These controls are the only visible potion and
+-- weapon-swap presentation.
+ActionBar.utilityRoot = nil
+ActionBar.utilityPotion = nil
+ActionBar.utilityWeaponSwap = nil
+
+local nativeUtilityHooks = { weaponSwap = false, potion = false }
+
+local UTILITY_GAP = 1
+local UTILITY_DOWN_OFFSET = 6.5
+local UTILITY_WEAPON_TEXTURE_FALLBACK = "EsoUI/Art/ActionBar/weaponSwap.dds"
+local UTILITY_BAR_INDICATOR_ACTIVE = { 1.0, 0.78, 0.16, 1.0 }
+local UTILITY_BAR_INDICATOR_INACTIVE = { 0.62, 0.62, 0.62, 0.38 }
+local UTILITY_BAR_INDICATOR_GAP = 5
+local UTILITY_BAR_INDICATOR_WIDTH = 16
+local UTILITY_BAR_INDICATOR_HEIGHT = 16
+local UTILITY_BAR_INDICATOR_TEXTURE = "GrimSuite/Textures/bar_indicator_triangle.dds"
 
 -- Optional standalone stack tracker. The tracker shows one entry per supported
 -- stack type, but only when a qualifying skill is slotted on either weapon bar.
@@ -268,6 +292,22 @@ local function ApplyOverlayTextStyles()
             end
         end
     end
+
+    if ActionBar.utilityPotion then
+        ActionBar.utilityPotion.timer:SetFont(timerFont)
+        ActionBar.utilityPotion.timer:ClearAnchors()
+        ActionBar.utilityPotion.timer:SetAnchor(CENTER, ActionBar.utilityPotion.frame, CENTER, timerX, timerY)
+        ActionBar.utilityPotion.count:SetFont(POTION_COUNT_FONT)
+        ActionBar.utilityPotion.count:ClearAnchors()
+        ActionBar.utilityPotion.count:SetAnchor(TOP, ActionBar.utilityPotion.frame, BOTTOM, 0, 0)
+        ActionBar.utilityPotion.count:SetDimensions(POTION_SIZE, 30)
+        ActionBar.utilityPotion.count:SetHorizontalAlignment(TEXT_ALIGN_CENTER)
+        ActionBar.utilityPotion.count:SetVerticalAlignment(TEXT_ALIGN_TOP)
+    end
+    if ActionBar.utilityWeaponSwap then
+        ActionBar.utilityWeaponSwap.count:SetFont(stackFont)
+        ActionBar.utilityWeaponSwap.timer:SetFont(timerFont)
+    end
 end
 
 -- Native controls that visually belong to the action bar.  We keep their
@@ -435,10 +475,25 @@ local function CreateDisplayButton(root, x, key, prefix)
     return { frame = frame, icon = icon, shade = shade, pressed = pressed, glow = glow, outerGlow = outerGlow, timer = timer, stack = stack, ultValue = ultValue }
 end
 
+local function CreateBarIndicator(name, parent, rowButton)
+    -- GrimSuite-owned bar selector: a small filled triangle centered on the
+    -- actual action-row button.  Using a texture avoids font glyph/baseline
+    -- alignment issues and keeps the indicator visually consistent.
+    local indicator = WM:CreateControl(name, parent, CT_TEXTURE)
+    indicator:SetDimensions(UTILITY_BAR_INDICATOR_WIDTH, UTILITY_BAR_INDICATOR_HEIGHT)
+    indicator:ClearAnchors()
+    indicator:SetAnchor(RIGHT, rowButton.frame, LEFT, -UTILITY_BAR_INDICATOR_GAP, 0)
+    indicator:SetTexture(UTILITY_BAR_INDICATOR_TEXTURE)
+    indicator:SetColor(unpack(UTILITY_BAR_INDICATOR_INACTIVE))
+    indicator:SetDrawLevel(26)
+    indicator:SetMouseEnabled(false)
+    return indicator
+end
+
 local function CreateRow(rootName, controls, prefix)
     local root = WM:CreateTopLevelWindow(rootName)
     root:SetDimensions(GetTotalWidth(), GetIconSize())
-    root:SetMouseEnabled(false)
+    root:SetMouseEnabled(true)
     root:SetMovable(false)
     root:SetClampedToScreen(true)
     root:SetDrawTier(DT_LOW)
@@ -449,12 +504,341 @@ local function CreateRow(rootName, controls, prefix)
     end
 
     controls[ULT_SLOT] = CreateDisplayButton(root, GetRowWidth() + ULT_GAP, "Ult", prefix)
+    if string.find(rootName, "Front", 1, true) then
+        ActionBar.frontBarIndicator = CreateBarIndicator("GrimSuiteAB_FrontBarIndicator", root, controls[MIN_SLOT])
+    elseif string.find(rootName, "Back", 1, true) then
+        ActionBar.backBarIndicator = CreateBarIndicator("GrimSuiteAB_BackBarIndicator", root, controls[MIN_SLOT])
+    end
     return root
 end
 
 local InstallDragHandlers
+local GetNativeActionBarControls
+
+local function GetNativeWeaponSwapIconTexture(weaponSwap)
+    if not weaponSwap then return nil end
+
+    -- Borrow only the native texture path. The visible control itself belongs
+    -- to GrimSuite, so ESO can continue rebuilding its own hidden control safely.
+    local candidates = {
+        weaponSwap:GetNamedChild("Icon"),
+        weaponSwap:GetNamedChild("WeaponSwapIcon"),
+        weaponSwap:GetNamedChild("Button"),
+    }
+
+    for _, child in ipairs(candidates) do
+        if child then
+            local ok, texture = pcall(function() return child:GetTexture() end)
+            if ok and texture and texture ~= "" then
+                return texture
+            end
+            local okNormal, normal = pcall(function() return child:GetNormalTexture() end)
+            if okNormal and normal and normal ~= "" then
+                return normal
+            end
+        end
+    end
+
+    return UTILITY_WEAPON_TEXTURE_FALLBACK
+end
+
+local function CreateUtilityButton(parent, name, size)
+    local frame = MakeFrame(name .. "Frame", parent)
+    frame:SetDimensions(size, size)
+    -- The utility weapon-swap presentation is icon-only; do not draw an
+    -- otherwise empty GrimSuite action-slot box around it.
+    if string.find(name, "WeaponSwap", 1, true) then
+        frame:SetCenterColor(0, 0, 0, 0)
+        frame:SetEdgeColor(0, 0, 0, 0)
+    end
+    frame:SetMouseEnabled(true)
+
+    local icon = WM:CreateControl(name .. "Icon", frame, CT_TEXTURE)
+    icon:SetAnchor(TOPLEFT, frame, TOPLEFT, 2, 2)
+    icon:SetAnchor(BOTTOMRIGHT, frame, BOTTOMRIGHT, -2, -2)
+    icon:SetTextureCoords(0, 1, 0, 1)
+    icon:SetDrawLevel(21)
+    icon:SetMouseEnabled(false)
+
+    local shade = WM:CreateControl(name .. "Shade", frame, CT_BACKDROP)
+    shade:SetAnchorFill(icon)
+    if string.find(name, "WeaponSwap", 1, true) then
+        -- Weapon swap is intentionally icon-only. Do not leave the faint
+        -- utility-slot shadow behind it when its icon is transparent.
+        shade:SetCenterColor(0, 0, 0, 0)
+    else
+        shade:SetCenterColor(0, 0, 0, 0.10)
+    end
+    shade:SetEdgeColor(0, 0, 0, 0)
+    shade:SetDrawLevel(22)
+    shade:SetMouseEnabled(false)
+
+    local pressed = WM:CreateControl(name .. "Pressed", frame, CT_BACKDROP)
+    pressed:SetAnchor(TOPLEFT, frame, TOPLEFT, 2, 2)
+    pressed:SetAnchor(BOTTOMRIGHT, frame, BOTTOMRIGHT, -2, -2)
+    pressed:SetCenterColor(0, 0, 0, 0.28)
+    pressed:SetEdgeColor(1, 1, 1, 0.22)
+    pressed:SetEdgeTexture("EsoUI/Art/Tooltips/UI-Border.dds", 16, 16, 2, 0)
+    pressed:SetDrawLevel(27)
+    pressed:SetHidden(true)
+    pressed:SetMouseEnabled(false)
+
+    local count = WM:CreateControl(name .. "Count", frame, CT_LABEL)
+    count:SetFont(string.find(name, "Potion", 1, true) and POTION_COUNT_FONT or GetStackFont())
+    if string.find(name, "Potion", 1, true) then
+        -- Potion count lives just outside the bottom edge of the icon so it
+        -- never overlaps the cooldown timer.
+        count:SetAnchor(TOP, frame, BOTTOM, 0, 0)
+        count:SetDimensions(size, 30)
+        count:SetVerticalAlignment(TEXT_ALIGN_TOP)
+    else
+        count:SetAnchor(BOTTOM, frame, BOTTOM, 0, -2)
+        count:SetVerticalAlignment(TEXT_ALIGN_BOTTOM)
+    end
+    count:SetHorizontalAlignment(TEXT_ALIGN_CENTER)
+    count:SetColor(unpack(STACK_COLOR))
+    count:SetDrawLevel(25)
+    count:SetText("")
+    count:SetMouseEnabled(false)
+
+    local timer = WM:CreateControl(name .. "Timer", frame, CT_LABEL)
+    timer:SetFont(GetTimerFont())
+    timer:SetAnchor(CENTER, frame, CENTER, tonumber(ActionBar.timerOffsetX) or 0, tonumber(ActionBar.timerOffsetY) or 0)
+    timer:SetHorizontalAlignment(TEXT_ALIGN_CENTER)
+    timer:SetVerticalAlignment(TEXT_ALIGN_CENTER)
+    timer:SetColor(unpack(TIMER_COLOR))
+    timer:SetDrawLevel(24)
+    timer:SetText("")
+    timer:SetMouseEnabled(false)
+
+    return {
+        frame = frame,
+        icon = icon,
+        shade = shade,
+        pressed = pressed,
+        count = count,
+        timer = timer,
+    }
+end
+
+local UpdatePotionTimer
+
+local function CreateUtilityControls()
+    if ActionBar.utilityRoot then return end
+
+    local root = WM:CreateTopLevelWindow("GrimSuiteAB_UtilityRoot")
+    root:SetDimensions(POTION_SIZE + UTILITY_GAP + SLOT_SIZE + UTILITY_BAR_INDICATOR_GAP + UTILITY_BAR_INDICATOR_WIDTH, POTION_SIZE)
+    root:SetMouseEnabled(false)
+    root:SetMovable(false)
+    root:SetClampedToScreen(true)
+    root:SetDrawTier(DT_LOW)
+
+    -- Quickslot cooldowns do not reliably emit a dedicated countdown event.
+    -- Tick only the GrimSuite-owned potion timer so it visibly counts down
+    -- without rebuilding the whole utility control every frame.
+    local timerAccumulator = 0
+    root:SetHandler("OnUpdate", function(_, delta)
+        timerAccumulator = timerAccumulator + (delta or 0)
+        if timerAccumulator >= 0.05 then
+            timerAccumulator = 0
+            UpdatePotionTimer()
+        end
+    end)
+
+    ActionBar.utilityRoot = root
+    ActionBar.utilityPotion = CreateUtilityButton(root, "GrimSuiteAB_Potion", POTION_SIZE)
+    ActionBar.utilityWeaponSwap = CreateUtilityButton(root, "GrimSuiteAB_WeaponSwap", SLOT_SIZE)
+
+    ActionBar.utilityPotion.frame:SetAnchor(TOPLEFT, root, TOPLEFT, 0, 0)
+    ActionBar.utilityWeaponSwap.frame:SetAnchor(
+        TOPLEFT, root, TOPLEFT,
+        POTION_SIZE + UTILITY_GAP,
+        6.5
+    )
+
+    local potion = ActionBar.utilityPotion
+    potion.frame:SetHandler("OnMouseDown", function(_, button)
+        if button == MOUSE_BUTTON_INDEX_LEFT then
+            local slot = GetCurrentQuickslot()
+            if slot and slot > 0 and ZO_ActionBar_CanUseActionSlots() then
+                OnSlotDown(slot, HOTBAR_CATEGORY_QUICKSLOT_WHEEL)
+                ZO_ActionBar_OnActionButtonDown(slot, HOTBAR_CATEGORY_QUICKSLOT_WHEEL)
+                potion.pressed:SetHidden(false)
+            end
+        end
+    end)
+    potion.frame:SetHandler("OnMouseUp", function(_, button)
+        if button == MOUSE_BUTTON_INDEX_LEFT then
+            local slot = GetCurrentQuickslot()
+            if slot and slot > 0 then
+                OnSlotUp(slot, HOTBAR_CATEGORY_QUICKSLOT_WHEEL)
+                ZO_ActionBar_OnActionButtonUp(slot, HOTBAR_CATEGORY_QUICKSLOT_WHEEL)
+            end
+            potion.pressed:SetHidden(true)
+        end
+    end)
+
+    local weapon = ActionBar.utilityWeaponSwap
+    weapon.frame:SetHandler("OnMouseDown", function(_, button)
+        if button == MOUSE_BUTTON_INDEX_LEFT then
+            weapon.pressed:SetHidden(false)
+        end
+    end)
+    weapon.frame:SetHandler("OnMouseUp", function(_, button)
+        if button == MOUSE_BUTTON_INDEX_LEFT then
+            weapon.pressed:SetHidden(true)
+            OnWeaponSwap()
+        end
+    end)
+end
+
+UpdatePotionTimer = function()
+    local potion = ActionBar.utilityPotion
+    if not potion then return end
+
+    local slot = GetCurrentQuickslot()
+    local remain, duration = 0, 0
+
+    if slot and slot > 0 then
+        local okCooldown, r, d = pcall(GetSlotCooldownInfo, slot, HOTBAR_CATEGORY_QUICKSLOT_WHEEL)
+        if okCooldown then
+            remain = r or 0
+            duration = d or 0
+        end
+    end
+
+    -- GetSlotCooldownInfo can report the short global/action cooldown on the
+    -- quickslot when another skill is cast. That is not a potion cooldown and
+    -- should never replace the potion timer. Real potion cooldowns are much
+    -- longer than the ~1 second action/GCD cooldown.
+    local isShortActionCooldown = duration > 0 and duration <= 2000
+
+    if remain > 0 and duration > 0 and not isShortActionCooldown then
+        potion.timer:SetText(ZO_FormatTimeShowUnitOverThresholdShowDecimalUnderThreshold(
+            remain / 1000,
+            ZO_ONE_MINUTE_IN_SECONDS,
+            ZO_EFFECT_EXPIRATION_IMMINENCE_THRESHOLD_S,
+            TIME_FORMAT_STYLE_SHOW_LARGEST_UNIT
+        ))
+    else
+        potion.timer:SetText("")
+    end
+end
+
+local function UpdateUtilityControls()
+    if not ActionBar.utilityRoot then return end
+
+    local weaponSwap, nativePotion = GetNativeActionBarControls()
+    local potion = ActionBar.utilityPotion
+    local weapon = ActionBar.utilityWeaponSwap
+    if not potion or not weapon then return end
+
+    potion.frame:SetHidden(not ActionBar.showQuickslot)
+    weapon.frame:SetHidden(not ActionBar.showWeaponSwap)
+
+    local activeCategory = GetActiveHotbarCategory()
+    if activeCategory ~= HOTBAR_CATEGORY_PRIMARY and activeCategory ~= HOTBAR_CATEGORY_BACKUP then
+        activeCategory = HOTBAR_CATEGORY_PRIMARY
+    end
+
+    -- Each indicator is anchored to the center of its actual GrimSuite row,
+    -- so the top line belongs to the top bar and the bottom line to the bottom
+    -- bar regardless of utility-icon position.
+    if ActionBar.frontBarIndicator then
+        ActionBar.frontBarIndicator:SetColor(unpack(
+            activeCategory == HOTBAR_CATEGORY_PRIMARY
+                and UTILITY_BAR_INDICATOR_ACTIVE or UTILITY_BAR_INDICATOR_INACTIVE
+        ))
+        ActionBar.frontBarIndicator:SetHidden(not ActionBar.showWeaponSwap)
+    end
+    if ActionBar.backBarIndicator then
+        ActionBar.backBarIndicator:SetColor(unpack(
+            activeCategory == HOTBAR_CATEGORY_BACKUP
+                and UTILITY_BAR_INDICATOR_ACTIVE or UTILITY_BAR_INDICATOR_INACTIVE
+        ))
+        ActionBar.backBarIndicator:SetHidden(not ActionBar.showWeaponSwap)
+    end
+
+    if nativePotion then
+        nativePotion:SetScale(1)
+        nativePotion:SetHidden(true)
+    end
+
+    if weaponSwap then
+        weaponSwap:SetScale(1)
+        weaponSwap:SetHidden(true)
+        local texture = GetNativeWeaponSwapIconTexture(weaponSwap)
+        if texture and texture ~= "" then
+            weapon.icon:SetTexture(texture)
+        end
+    end
+
+    local slot = GetCurrentQuickslot()
+    local icon = nil
+    local count = 0
+    local usable = true
+    local remain, duration = 0, 0
+
+    if slot and slot > 0 then
+        local okTexture, slotTexture = pcall(GetSlotTexture, slot, HOTBAR_CATEGORY_QUICKSLOT_WHEEL)
+        if okTexture and slotTexture then icon = slotTexture end
+
+        local okCount, slotCount = pcall(GetSlotItemCount, slot, HOTBAR_CATEGORY_QUICKSLOT_WHEEL)
+        if okCount and slotCount then count = slotCount end
+
+        local okCooldown, r, d = pcall(GetSlotCooldownInfo, slot, HOTBAR_CATEGORY_QUICKSLOT_WHEEL)
+        if okCooldown then
+            remain = r or 0
+            duration = d or 0
+        end
+
+        local quickslotButton = ZO_ActionBar_GetButton(slot, HOTBAR_CATEGORY_QUICKSLOT_WHEEL)
+        if quickslotButton then
+            if quickslotButton.HandleSlotChanged then
+                quickslotButton:HandleSlotChanged(HOTBAR_CATEGORY_QUICKSLOT_WHEEL)
+            end
+            usable = quickslotButton.usable
+        end
+    end
+
+    if icon and icon ~= "" then
+        potion.icon:SetTexture(icon)
+        potion.icon:SetHidden(false)
+        potion.shade:SetHidden(false)
+        potion.icon:SetAlpha(usable == false and UNUSABLE_ICON_ALPHA or ACTIVE_ICON_ALPHA)
+        potion.icon:SetDesaturation(usable == false and UNUSABLE_DESATURATION or 0)
+    else
+        potion.icon:SetTexture("")
+        potion.icon:SetHidden(true)
+        potion.shade:SetHidden(true)
+    end
+
+    if count and count > 0 then
+        potion.count:SetText(tostring(count))
+    else
+        potion.count:SetText("")
+    end
+
+    UpdatePotionTimer()
+
+    -- HandleSlotChanged() above may repaint the native quickslot. Hide the
+    -- native presentation again after state synchronization.
+    if nativePotion then nativePotion:SetHidden(true) end
+    if weaponSwap then weaponSwap:SetHidden(true) end
+end
+
+local function AnchorUtilityControls()
+    if not ActionBar.utilityRoot then return end
+    local actionBar = GetControl("ZO_ActionBar1")
+    local weaponSwap = actionBar and actionBar:GetNamedChild("WeaponSwap")
+    if not weaponSwap then return end
+
+    ActionBar.utilityRoot:ClearAnchors()
+    ActionBar.utilityRoot:SetAnchor(TOPRIGHT, weaponSwap, TOPRIGHT, 0, -UTILITY_DOWN_OFFSET + 6.5)
+end
 
 function ActionBar:CreateRows()
+    CreateUtilityControls()
     if not self.frontRoot then
         self.frontRoot = CreateRow("GrimSuiteAB_FrontRoot", self.frontControls, "Front")
     end
@@ -516,7 +900,27 @@ local function StyleDisplay(data, active, hasAbility, usable)
     end
 end
 
+local function InstallNativeUtilitySuppressionHooks()
+    local weaponSwap, potion = GetNativeActionBarControls()
+
+    if weaponSwap and not nativeUtilityHooks.weaponSwap then
+        nativeUtilityHooks.weaponSwap = true
+        ZO_PreHookHandler(weaponSwap, "OnShow", function()
+            weaponSwap:SetHidden(true)
+        end)
+    end
+
+    if potion and not nativeUtilityHooks.potion then
+        nativeUtilityHooks.potion = true
+        ZO_PreHookHandler(potion, "OnShow", function()
+            potion:SetHidden(true)
+        end)
+    end
+end
+
 function ActionBar:UpdateNativeVisualSuppression()
+    InstallNativeUtilitySuppressionHooks()
+
     -- Keep ESO's controls alive for keyboard/mouse/gamepad input, but remove
     -- their visible icon/background so they cannot appear as ghost bars.
     for _, category in ipairs(HOTBAR_CATEGORIES) do
@@ -525,9 +929,13 @@ function ActionBar:UpdateNativeVisualSuppression()
             if button then HideNativeVisuals(button) end
         end
     end
+
+    local weaponSwap, potion = GetNativeActionBarControls()
+    if weaponSwap then weaponSwap:SetHidden(true) end
+    if potion then potion:SetHidden(true) end
 end
 
-local function GetNativeActionBarControls()
+GetNativeActionBarControls = function()
     local actionBar = GetControl("ZO_ActionBar1")
     if not actionBar then return nil, nil end
 
@@ -586,46 +994,19 @@ local function ApplyNativeLayoutOffset()
         )
     end
 
-    if potion and weaponSwap then
-        potion:SetHidden(not ActionBar.showQuickslot)
-        potion:ClearAnchors()
-
-        -- QuickslotButton is the actual native potion/quickslot control.
-        -- Scale the real control rather than an unrelated action-bar child.
-        -- SetScale() is absolute, so repeated Refresh()/AnchorRows() calls
-        -- cannot compound the scaling.
-        local potionScale = POTION_SIZE / SLOT_SIZE
-        potion:SetScale(potionScale)
-
-        weaponSwap:SetScale(1)
-        weaponSwap:SetHidden(not ActionBar.showWeaponSwap)
-
-        -- Center the potion on the actual midpoint of the FULL TWO-ROW
-        -- GrimSuite bar.  The back row begins at weaponSwap TOP, and the
-        -- front row ends ROW_GAP pixels above that same point.
-        --
-        -- Using CENTER here is intentional: it makes the potion's center
-        -- independent of POTION_SIZE.  The previous TOPRIGHT + calculated
-        -- height approach could shift the visual center when ESO reported
-        -- the native control's dimensions differently after scaling.
-        local potionVisualSize = (potion:GetHeight() or SLOT_SIZE) * potionScale
-        -- The potion should sit vertically centered on the weapon-swap icon.
-        -- ESO's QuickslotButton is currently several pixels above the swap
-        -- indicator, so give it a fixed downward correction.
-        local barCenterY = 30 - (ROW_GAP * 0.5)
-
-        -- Preserve the existing horizontal relationship: the potion's RIGHT
-        -- edge sits 1px left of weaponSwap's LEFT edge.
-        local potionCenterX = -1 - (potionVisualSize * 0.5)
-
-        potion:SetAnchor(
-            CENTER,
-            weaponSwap,
-            TOPLEFT,
-            potionCenterX,
-            barCenterY
-        )
+    -- Native utility controls remain alive for ESO input/state, but GrimSuite
+    -- owns the visible rendering now.
+    if potion then
+        potion:SetScale(1)
+        potion:SetHidden(true)
     end
+    if weaponSwap then
+        weaponSwap:SetScale(1)
+        weaponSwap:SetHidden(true)
+    end
+
+    AnchorUtilityControls()
+    UpdateUtilityControls()
 end
 
 function ActionBar:AnchorRows()
@@ -651,8 +1032,8 @@ function ActionBar:AnchorRows()
     -- The native weapon-swap control is now the physical position anchor.
     -- Do not apply positionX/positionY a second time here.
     local rowGap = GetRowGap()
-    self.frontRoot:SetAnchor(BOTTOMLEFT, weaponSwap, RIGHT, 0, -rowGap)
-    self.backbarRoot:SetAnchor(TOPLEFT, weaponSwap, RIGHT, 0, 0)
+    self.frontRoot:SetAnchor(BOTTOMLEFT, weaponSwap, RIGHT, -UTILITY_ACTIONBAR_TIGHTEN, -rowGap)
+    self.backbarRoot:SetAnchor(TOPLEFT, weaponSwap, RIGHT, -UTILITY_ACTIONBAR_TIGHTEN, 0)
 
     -- Keep the ultimate beside the bars, centered vertically across the
     -- combined two-row block.  Anchor both ult controls to the same stable
@@ -664,13 +1045,13 @@ function ActionBar:AnchorRows()
     local frontUlt = self.frontControls[ULT_SLOT]
     if frontUlt and frontUlt.frame then
         frontUlt.frame:ClearAnchors()
-        frontUlt.frame:SetAnchor(TOPLEFT, weaponSwap, RIGHT, ultX, ultY)
+        frontUlt.frame:SetAnchor(TOPLEFT, weaponSwap, RIGHT, ultX - UTILITY_ACTIONBAR_TIGHTEN, ultY)
     end
 
     local backUlt = self.backbarControls[ULT_SLOT]
     if backUlt and backUlt.frame then
         backUlt.frame:ClearAnchors()
-        backUlt.frame:SetAnchor(TOPLEFT, weaponSwap, RIGHT, ultX, ultY)
+        backUlt.frame:SetAnchor(TOPLEFT, weaponSwap, RIGHT, ultX - UTILITY_ACTIONBAR_TIGHTEN, ultY)
     end
 end
 
@@ -2663,6 +3044,7 @@ function ActionBar:Refresh()
     -- suppress native visuals AFTER the sync/paint pass, just like a final
     -- presentation step.
     self:UpdateNativeVisualSuppression()
+    UpdateUtilityControls()
     UpdateEffectDisplays()
     UpdateStackTracker()
 end
@@ -2787,8 +3169,37 @@ function ActionBar:Initialize()
             self:UpdateRow(self.frontControls, HOTBAR_CATEGORY_PRIMARY, currentCategory == HOTBAR_CATEGORY_PRIMARY)
             self:UpdateRow(self.backbarControls, HOTBAR_CATEGORY_BACKUP, currentCategory == HOTBAR_CATEGORY_BACKUP)
             self:UpdateNativeVisualSuppression()
+            UpdateUtilityControls()
         end, 0)
     end)
+
+    -- Quickslot is no longer part of the normal action-slot update event.
+    -- Keep the GrimSuite-owned potion presentation synchronized with ESO's
+    -- dedicated quickslot events instead.
+    if EVENT_ACTIVE_QUICKSLOT_CHANGED then
+        EM:RegisterForEvent(GS.name .. "_AB_UtilityQuickslot", EVENT_ACTIVE_QUICKSLOT_CHANGED, function()
+            if not self.initialized then return end
+            UpdateUtilityControls()
+            self:UpdateNativeVisualSuppression()
+        end)
+    end
+
+    if EVENT_ACTION_UPDATE_COOLDOWNS then
+        EM:RegisterForEvent(GS.name .. "_AB_UtilityCooldowns", EVENT_ACTION_UPDATE_COOLDOWNS, function()
+            if not self.initialized then return end
+            UpdateUtilityControls()
+        end)
+    end
+
+    -- Inventory changes can alter the quickslot count/usable state without
+    -- changing which quickslot is selected.
+    local function RefreshUtilityInventory()
+        if not self.initialized then return end
+        UpdateUtilityControls()
+    end
+    EM:RegisterForEvent(GS.name .. "_AB_UtilityInventoryFull", EVENT_INVENTORY_FULL_UPDATE, RefreshUtilityInventory)
+    EM:RegisterForEvent(GS.name .. "_AB_UtilityInventorySingle", EVENT_INVENTORY_SINGLE_SLOT_UPDATE, RefreshUtilityInventory)
+    EM:RegisterForEvent(GS.name .. "_AB_UtilityItemSlotChanged", EVENT_ITEM_SLOT_CHANGED, RefreshUtilityInventory)
 
     -- Some setup/loadout systems can update both hotbars without changing the
     -- active-hotbar state. This event is the explicit all-bars assignment
