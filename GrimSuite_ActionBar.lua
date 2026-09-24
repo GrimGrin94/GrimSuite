@@ -697,7 +697,9 @@ end
 --
 -- key   = slotted ability
 -- value = player-effect ability that carries the actual stack count
--- Shared Crux is handled separately so it can only appear on Fatecarver.
+-- Shared Crux is handled separately so the tracker can determine whether
+-- Crux is actually relevant to the current build without tying it to one
+-- specific Arcanist ability.
 local STACK_EFFECT_BY_ABILITY = {
     -- Molten Whip / Seething Fury
     [20805] = 122658,
@@ -733,9 +735,10 @@ local CRUX_EFFECT_ID = 184220
 local CRYSTAL_FRAGMENTS_EFFECT_ID = 46327
 local CRYSTAL_FRAGMENTS_ABILITY_ID = 114716
 
--- Crux is a shared resource, not a stack counter that belongs on every
--- Arcanist skill that generates or consumes it. GrimSuite only displays the
--- Crux count on Fatecarver and its two morphs.
+-- Crux is a shared resource, so the tracker should only appear when the
+-- player has a slotted ability that can actually consume Crux. Skills that
+-- merely benefit from having Crux but do not spend it do not make the tracker
+-- relevant on their own.
 local function IsFatecarverAbility(abilityId)
     if not abilityId or abilityId <= 0 or not GetAbilityName then
         return false
@@ -844,6 +847,42 @@ end
 
 local BOUND_ARMAMENTS_ABILITY_ID = 24165
 
+-- Any ability matching one of these names is a Crux spender. The tracker
+-- checks both weapon bars, so subclassing and support/tank Arcanist setups
+-- are handled without hard-coding one particular role or rotation.
+local CRUX_CONSUMING_ABILITY_NAMES = {
+    "fatecarver",
+    "tentacular dread",
+    "remedy cascade",
+    "cascading fortune",
+    "curative surge",
+    "tidal chakram",
+    "runespite ward",
+    "impervious runeward",
+    "spiteward of the lucid mind",
+    "unbreakable fate",
+}
+
+local function IsCruxConsumingAbility(abilityId)
+    if not abilityId or abilityId <= 0 or not GetAbilityName then
+        return false
+    end
+
+    local ok, name = pcall(GetAbilityName, abilityId)
+    if not ok or not name then
+        return false
+    end
+
+    name = zo_strlower(tostring(name))
+    for _, cruxName in ipairs(CRUX_CONSUMING_ABILITY_NAMES) do
+        if string.find(name, cruxName, 1, true) then
+            return true
+        end
+    end
+
+    return false
+end
+
 local BOW_STACK_ABILITIES = {
     [61902] = true, -- Grim Focus
     [61919] = true, -- Merciless Resolve
@@ -874,7 +913,7 @@ local function GetTrackerSlottedAbility(kind)
             if abilityId and abilityId > 0 then
                 if kind == "BoundArmaments" and abilityId == BOUND_ARMAMENTS_ABILITY_ID then
                     return abilityId
-                elseif kind == "Crux" and (IsFatecarverAbility(abilityId) or IsTentacularDreadAbility(abilityId)) then
+                elseif kind == "Crux" and IsCruxConsumingAbility(abilityId) then
                     return abilityId
                 elseif kind == "Bow" and IsBowStackAbility(abilityId) then
                     return abilityId
@@ -1161,7 +1200,10 @@ local function UpdateStackTracker()
             and GetTrackerSlottedAbility(definition.key) or nil
 
         if data and abilityId then
-            data.icon:SetTexture(GetAbilityIcon(abilityId))
+            -- Crux is a shared resource, so its tracker icon stays fixed even
+            -- when the qualifying Arcanist skill changes with a bar swap.
+            local iconAbilityId = definition.key == "Crux" and CRUX_EFFECT_ID or abilityId
+            data.icon:SetTexture(GetAbilityIcon(iconAbilityId))
             data.stack:SetFont(GetStackTrackerFont())
             data.stack:SetText(tostring(GetStackTrackerCount(definition.key, abilityId)))
             data.frame:SetHidden(false)
@@ -2544,7 +2586,7 @@ local function RegisterLibAddonMenu()
         {
             type = "checkbox",
             name = "Show Crux",
-            tooltip = "Show the Crux tracker when Fatecarver or Tentacular Dread is slotted on either weapon bar.",
+            tooltip = "Show the Crux tracker when a Crux-consuming ability is slotted on either weapon bar.",
             getFunc = function() return ActionBar.showCrux == true end,
             setFunc = function(value)
                 SaveStackTrackerSetting("showCrux", value == true)

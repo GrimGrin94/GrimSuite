@@ -299,6 +299,21 @@ function GSAttributeBar:Initialize(unitTag, powerType, topLevelCtrl, reversed)
     self.attrTextPercent = self.control:GetNamedChild("Percent")
     self.attrBar = self.control:GetNamedChild("Bar")
 
+    -- Resource totals are centered within their associated bar.
+    self.attrText:ClearAnchors()
+    self.attrText:SetAnchor(CENTER, self.control, CENTER, 0, 0)
+
+    -- Percentages sit just inside the appropriate outer edge:
+    -- Health = left, Magicka (reversed) = right, Stamina = left.
+    self.attrTextPercent:ClearAnchors()
+    if self.reversed then
+        self.attrTextPercent:SetAnchor(RIGHT, self.control, RIGHT, -10, 0)
+        self.attrTextPercent:SetHorizontalAlignment(RIGHT)
+    else
+        self.attrTextPercent:SetAnchor(LEFT, self.control, LEFT, 10, 0)
+        self.attrTextPercent:SetHorizontalAlignment(LEFT)
+    end
+
     ZO_StatusBar_SetGradientColor(
         self.attrBar,
         ZO_POWER_BAR_GRADIENT_COLORS[powerType]
@@ -467,8 +482,8 @@ function GSAttributeHealthBar:Initialize(unitTag, powerType, topLevelCtrl)
 
     self.shieldBar:SetColor(1, 0.49, 0.13, 0.50)
     self.shieldBar:ClearAnchors()
-    self.shieldBar:SetAnchor(TOPLEFT, self.attrBar, TOPLEFT, 0, 5)
-    self.shieldBar:SetAnchor(BOTTOMRIGHT, self.attrBar, BOTTOMRIGHT, 0, -5)
+    self.shieldBar:SetAnchor(TOPLEFT, self.attrBar, TOPLEFT, 0, 3)
+    self.shieldBar:SetAnchor(BOTTOMRIGHT, self.attrBar, BOTTOMRIGHT, 0, -3)
     self:OnUpdateShield(0, true)
 
     local function OnVisualPower(_, unitTag, unitAttributeVisual, statType, attributeType, powerType, oldValue, newValue, oldMaxValue, newMaxValue)
@@ -533,8 +548,8 @@ function GSAttributeHealthBar:SetHeight(value)
     GSAttributeBar.SetHeight(self, value)
     if self.shieldBar then
         self.shieldBar:ClearAnchors()
-        self.shieldBar:SetAnchor(TOPLEFT, self.attrBar, TOPLEFT, 0, 5)
-        self.shieldBar:SetAnchor(BOTTOMRIGHT, self.attrBar, BOTTOMRIGHT, 0, -5)
+        self.shieldBar:SetAnchor(TOPLEFT, self.attrBar, TOPLEFT, 0, 3)
+        self.shieldBar:SetAnchor(BOTTOMRIGHT, self.attrBar, BOTTOMRIGHT, 0, -3)
     end
 end
 
