@@ -23,7 +23,7 @@ local MIN_SLOT = 3
 local MAX_SLOT = 7
 local ULT_SLOT = 8
 local SLOT_COUNT = 5
-local HOTBAR_CATEGORIES = { HOTBAR_CATEGORY_PRIMARY, HOTBAR_CATEGORY_BACKUP }
+local HOTBAR_CATEGORIES = { HOTBAR_CATEGORY_PRIMARY, HOTBAR_CATEGORY_BACKUP, HOTBAR_CATEGORY_WEREWOLF }
 local SLOT_SIZE = 65
 local POTION_SIZE_DEFAULT = 70
 local SLOT_GAP = 3
@@ -846,7 +846,7 @@ local function UpdateUtilityControls()
     weapon.frame:SetHidden(not ActionBar.showWeaponSwap)
 
     local activeCategory = GetActiveHotbarCategory()
-    if activeCategory ~= HOTBAR_CATEGORY_PRIMARY and activeCategory ~= HOTBAR_CATEGORY_BACKUP then
+    if activeCategory ~= HOTBAR_CATEGORY_PRIMARY and activeCategory ~= HOTBAR_CATEGORY_BACKUP and activeCategory ~= HOTBAR_CATEGORY_WEREWOLF then
         activeCategory = HOTBAR_CATEGORY_PRIMARY
     end
 
@@ -2260,16 +2260,22 @@ end
 local function UpdateEffectDisplays()
     if not ActionBar.initialized then return end
 
+    local activeCategory = GetActiveHotbarCategory()
     for _, category in ipairs(HOTBAR_CATEGORIES) do
-        local controls = category == HOTBAR_CATEGORY_PRIMARY
-            and ActionBar.frontControls or ActionBar.backbarControls
-        for slot = MIN_SLOT, MAX_SLOT do
-            UpdateSlotEffectDisplay(controls[slot], slot, category, false)
-        end
+        -- Werewolf shares the front-row controls with the normal primary bar.
+        -- Only run its effect pass while transformed; otherwise its empty or
+        -- stale slots can overwrite the normal front-bar timer display.
+        if category ~= HOTBAR_CATEGORY_WEREWOLF or activeCategory == HOTBAR_CATEGORY_WEREWOLF then
+            local controls = category == HOTBAR_CATEGORY_BACKUP
+                and ActionBar.backbarControls or ActionBar.frontControls
+            for slot = MIN_SLOT, MAX_SLOT do
+                UpdateSlotEffectDisplay(controls[slot], slot, category, false)
+            end
 
-        local ult = controls[ULT_SLOT]
-        if ult and ult.timer then
-            ult.timer:SetText("")
+            local ult = controls[ULT_SLOT]
+            if ult and ult.timer then
+                ult.timer:SetText("")
+            end
         end
     end
 
@@ -2285,7 +2291,7 @@ local function UpdateActiveBarGlows()
         return
     end
 
-    local controls = activeCategory == HOTBAR_CATEGORY_PRIMARY
+    local controls = (activeCategory == HOTBAR_CATEGORY_PRIMARY or activeCategory == HOTBAR_CATEGORY_WEREWOLF)
         and ActionBar.frontControls or ActionBar.backbarControls
     local _, _, ultimateReady = GetUltimateState(ULT_SLOT, activeCategory)
     ultimateReady = ultimateReady == true
@@ -3263,7 +3269,7 @@ function ActionBar:Refresh()
     self:CreateRows()
     self:AnchorRows()
     local activeCategory = GetActiveHotbarCategory()
-    if activeCategory ~= HOTBAR_CATEGORY_PRIMARY and activeCategory ~= HOTBAR_CATEGORY_BACKUP then
+    if activeCategory ~= HOTBAR_CATEGORY_PRIMARY and activeCategory ~= HOTBAR_CATEGORY_BACKUP and activeCategory ~= HOTBAR_CATEGORY_WEREWOLF then
         activeCategory = HOTBAR_CATEGORY_PRIMARY
     end
 
@@ -3271,9 +3277,9 @@ function ActionBar:Refresh()
     -- The FRONT BAR is always the top row and the BACK BAR is always the
     -- bottom row. Weapon swapping changes only which row is active; it never
     -- changes which abilities belong to either physical row.
-    local frontCategory = HOTBAR_CATEGORY_PRIMARY
+    local frontCategory = activeCategory == HOTBAR_CATEGORY_WEREWOLF and HOTBAR_CATEGORY_WEREWOLF or HOTBAR_CATEGORY_PRIMARY
     local backCategory = HOTBAR_CATEGORY_BACKUP
-    self:UpdateRow(self.frontControls, frontCategory, activeCategory == HOTBAR_CATEGORY_PRIMARY)
+    self:UpdateRow(self.frontControls, frontCategory, activeCategory == HOTBAR_CATEGORY_PRIMARY or activeCategory == HOTBAR_CATEGORY_WEREWOLF)
     self:UpdateRow(self.backbarControls, backCategory, activeCategory == HOTBAR_CATEGORY_BACKUP)
 
     -- HandleSlotChanged() above can make the native button visible again, so
@@ -3412,7 +3418,7 @@ function ActionBar:Initialize()
         if not didActiveHotbarChange and not shouldUpdateAbilityAssignments then
             return
         end
-        if activeHotbarCategory ~= HOTBAR_CATEGORY_PRIMARY and activeHotbarCategory ~= HOTBAR_CATEGORY_BACKUP then
+        if activeHotbarCategory ~= HOTBAR_CATEGORY_PRIMARY and activeHotbarCategory ~= HOTBAR_CATEGORY_BACKUP and activeHotbarCategory ~= HOTBAR_CATEGORY_WEREWOLF then
             return
         end
 
@@ -3422,13 +3428,13 @@ function ActionBar:Initialize()
         zo_callLater(function()
             if not self.initialized then return end
             local currentCategory = GetActiveHotbarCategory()
-            if currentCategory ~= HOTBAR_CATEGORY_PRIMARY and currentCategory ~= HOTBAR_CATEGORY_BACKUP then
+            if currentCategory ~= HOTBAR_CATEGORY_PRIMARY and currentCategory ~= HOTBAR_CATEGORY_BACKUP and currentCategory ~= HOTBAR_CATEGORY_WEREWOLF then
                 return
             end
 
             self:CreateRows()
             self:AnchorRows()
-            self:UpdateRow(self.frontControls, HOTBAR_CATEGORY_PRIMARY, currentCategory == HOTBAR_CATEGORY_PRIMARY)
+            self:UpdateRow(self.frontControls, currentCategory == HOTBAR_CATEGORY_WEREWOLF and HOTBAR_CATEGORY_WEREWOLF or HOTBAR_CATEGORY_PRIMARY, currentCategory == HOTBAR_CATEGORY_PRIMARY or currentCategory == HOTBAR_CATEGORY_WEREWOLF)
             self:UpdateRow(self.backbarControls, HOTBAR_CATEGORY_BACKUP, currentCategory == HOTBAR_CATEGORY_BACKUP)
             self:UpdateNativeVisualSuppression()
             UpdateUtilityControls()
@@ -3486,7 +3492,7 @@ function ActionBar:Initialize()
         StartBoneyardTimer(slot, category, abilityId)
         StartHauntingCurseTimer(slot, category, abilityId)
 
-        local controls = category == HOTBAR_CATEGORY_PRIMARY and self.frontControls or self.backbarControls
+        local controls = (category == HOTBAR_CATEGORY_PRIMARY or category == HOTBAR_CATEGORY_WEREWOLF) and self.frontControls or self.backbarControls
         local data = controls and controls[slot]
         if data then
             FlashPressed(data)
@@ -3504,7 +3510,7 @@ function ActionBar:Initialize()
         if slot < MIN_SLOT or slot > ULT_SLOT then return end
         if hotbar ~= GetActiveHotbarCategory() then return end
 
-        local controls = hotbar == HOTBAR_CATEGORY_PRIMARY and self.frontControls or self.backbarControls
+        local controls = (hotbar == HOTBAR_CATEGORY_PRIMARY or hotbar == HOTBAR_CATEGORY_WEREWOLF) and self.frontControls or self.backbarControls
         local data = controls[slot]
         local button = GetButton(slot, hotbar)
         if not data or not button then return end

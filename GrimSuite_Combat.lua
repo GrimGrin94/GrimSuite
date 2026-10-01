@@ -220,6 +220,28 @@ local function SetLayoutUnlocked(enabled)
 
     EnableMouseDrag(Combat.gcdFrame, Combat.layoutUnlocked, SaveGCDPosition)
     EnableMouseDrag(Combat.weaveFrame, Combat.layoutUnlocked, SaveWeavePosition)
+    if Combat.executeFrame then
+        EnableMouseDrag(Combat.executeFrame, Combat.layoutUnlocked, function(control)
+            local centerX = GuiRoot:GetWidth() * 0.5
+            local centerY = GuiRoot:GetHeight() * 0.5
+            local x, y = control:GetCenter()
+            if x and y then
+                GS.Saved.executeX = math.floor(x - centerX + 0.5)
+                GS.Saved.executeY = math.floor(y - centerY + 0.5)
+            end
+        end)
+
+        -- Make the execute display available as a layout target while UI
+        -- dragging is unlocked, even when no qualifying skill is currently
+        -- slotted or the player is not in combat.
+        if Combat.layoutUnlocked then
+            Combat.executeLabel:SetText(Combat.executeLabel:GetText() ~= "" and Combat.executeLabel:GetText() or "100.0%")
+            Combat.executeLabel:SetColor(1, 1, 1, 1)
+            Combat.executeFrame:SetHidden(false)
+        elseif not Combat.inCombat then
+            Combat.executeFrame:SetHidden(true)
+        end
+    end
     EnableAttributeDrag(GetControl("GrimSuiteAttributes"), Combat.layoutUnlocked, SaveAttributesPosition)
 
     if Combat.weaveAverageFrame then
@@ -257,6 +279,137 @@ local function ScheduleLayoutRepair()
     end)
 end
 
+
+
+---------------------------------------------------------------------
+-- GrimSuite Execute Display
+--
+-- The execute display is setup-aware rather than simply class-aware:
+--   * It only activates when a qualifying execute skill is slotted on
+--     either the front or back weapon bar.
+--   * Sorcerer's Power Overload is also treated as a display trigger for
+--     parse workflows, since the player intentionally toggles it back on
+--     around the final 20-25% of a boss.
+--   * The target HP percentage remains visible through weapon swaps because
+--     both bars are checked independently.
+---------------------------------------------------------------------
+
+local EXECUTE_TRIGGER_NAMES = {
+    -- Sorcerer
+    ["mage's fury"] = true,
+    ["endless fury"] = true,
+    ["mages' fury"] = true,
+    ["power overload"] = true,
+
+    -- Nightblade
+    ["assassin's blade"] = true,
+    ["impale"] = true,
+    ["killer's blade"] = true,
+
+    -- Templar
+    ["radiant destruction"] = true,
+    ["radiant glory"] = true,
+    ["radiant oppression"] = true,
+}
+
+local function GetSlottedAbilityName(slot, category)
+    if not GetSlotBoundId or not GetAbilityName then return nil end
+
+    local okId, abilityId = pcall(GetSlotBoundId, slot, category)
+    if not okId or not abilityId or abilityId <= 0 then
+        return nil
+    end
+
+    local okName, name = pcall(GetAbilityName, abilityId)
+    if not okName or not name then return nil end
+
+    return zo_strlower(tostring(name))
+end
+
+local function IsExecuteTriggerSlotted()
+    -- Check BOTH physical weapon bars. This intentionally does not use the
+    -- active bar, so the percentage cannot disappear during a weapon swap.
+    for _, category in ipairs({ HOTBAR_CATEGORY_PRIMARY, HOTBAR_CATEGORY_BACKUP }) do
+        for slot = 3, 8 do
+            local name = GetSlottedAbilityName(slot, category)
+            if name and EXECUTE_TRIGGER_NAMES[name] then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+function Combat:CreateExecuteDisplay()
+    local frame = WM:CreateTopLevelWindow("GrimSuiteExecute")
+    frame:SetDimensions(180, 42)
+    frame:SetAnchor(CENTER, GuiRoot, CENTER, GS.Saved.executeX or 0, GS.Saved.executeY or -110)
+    frame:SetClampedToScreen(true)
+
+    local label = WM:CreateControl("GrimSuiteExecuteLabel", frame, CT_LABEL)
+    label:SetAnchorFill(frame)
+    label:SetHorizontalAlignment(TEXT_ALIGN_CENTER)
+    label:SetVerticalAlignment(TEXT_ALIGN_CENTER)
+    label:SetFont("EsoUI/Common/Fonts/Univers57.slug|28|soft-shadow-thick")
+    label:SetColor(1, 1, 1, 1)
+    label:SetText("")
+    -- The label is display-only; let the parent frame receive drag clicks.
+    label:SetMouseEnabled(false)
+
+    frame:SetHandler("OnMoveStop", function(c)
+        local centerX = GuiRoot:GetWidth() * 0.5
+        local centerY = GuiRoot:GetHeight() * 0.5
+        local x, y = c:GetCenter()
+        if x and y then
+            GS.Saved.executeX = math.floor(x - centerX + 0.5)
+            GS.Saved.executeY = math.floor(y - centerY + 0.5)
+        end
+    end)
+
+    self.executeFrame = frame
+    self.executeLabel = label
+    frame:SetHidden(true)
+end
+
+function Combat:UpdateExecuteDisplay()
+    if not self.executeFrame or not self.executeLabel then return end
+
+    -- While UI positioning is unlocked, keep the execute display present as
+    -- a draggable target.  Normal visibility rules resume as soon as it is
+    -- locked again.
+    if self.layoutUnlocked then
+        self.executeLabel:SetText(self.executeLabel:GetText() ~= "" and self.executeLabel:GetText() or "100.0%")
+        self.executeLabel:SetColor(1, 1, 1, 1)
+        self.executeFrame:SetHidden(false)
+        return
+    end
+
+    if GS.Saved.showExecute == false or not self.hudVisible or not self.inCombat or not IsExecuteTriggerSlotted() then
+        self.executeLabel:SetText("")
+        self.executeFrame:SetHidden(true)
+        return
+    end
+
+    local health, maxHealth = GetUnitPower("reticleover", COMBAT_MECHANIC_FLAGS_HEALTH)
+    health = tonumber(health) or 0
+    maxHealth = tonumber(maxHealth) or 0
+
+    if maxHealth <= 0 or health <= 0 then
+        self.executeLabel:SetText("")
+        self.executeFrame:SetHidden(true)
+        return
+    end
+
+    local percent = math.max(0, math.min(100, (health / maxHealth) * 100))
+    self.executeLabel:SetText(string.format("%.1f%%", percent))
+
+    -- Keep the first implementation deliberately simple: the number is
+    -- always white. Threshold-specific coloring/highlighting can be added
+    -- once the basic detection is verified in-game.
+    self.executeLabel:SetColor(1, 1, 1, 1)
+    self.executeFrame:SetHidden(false)
+end
 
 ---------------------------------------------------------------------
 -- GrimSuite Attribute Bars
@@ -1182,9 +1335,21 @@ end
 function Combat:Update()
     -- GCD is continuously animated; weave history is event-driven.
     self:UpdateGCD()
+    self:UpdateExecuteDisplay()
 end
 
 function Combat:ApplyLayout()
+    if self.executeFrame then
+        self.executeFrame:ClearAnchors()
+        self.executeFrame:SetAnchor(
+            CENTER,
+            GuiRoot,
+            CENTER,
+            GS.Saved.executeX or 0,
+            GS.Saved.executeY or -110
+        )
+    end
+
     if self.gcdFrame then
         self.gcdFrame:SetDimensions(GS.Saved.gcdWidth, GS.Saved.gcdHeight)
         self.gcdFrame:ClearAnchors()
@@ -1294,6 +1459,13 @@ function Combat:CreateSettings()
             end
         end, width="half" },
 
+        { type="header", name="Execute Target Health", width="full" },
+        { type="description", text="Shows target HP% only when a supported execute or Sorcerer Power Overload is slotted on either weapon bar.", width="full" },
+        { type="checkbox", name="Show Execute Target Health", getFunc=function() return GS.Saved.showExecute ~= false end, setFunc=function(v) GS.Saved.showExecute=v; self:UpdateExecuteDisplay() end, default=GS.SV.showExecute },
+        { type="slider", name="Execute Horizontal Position", min=-1920, max=1920, step=1, getFunc=function() return GS.Saved.executeX or 0 end, setFunc=function(v) GS.Saved.executeX=v; self:ApplyLayout() end, default=GS.SV.executeX, width="full" },
+        { type="slider", name="Execute Vertical Position", min=-1080, max=1080, step=1, getFunc=function() return GS.Saved.executeY or -110 end, setFunc=function(v) GS.Saved.executeY=v; self:ApplyLayout() end, default=GS.SV.executeY, width="full" },
+        { type="button", name="Center Execute Display", func=function() GS.Saved.executeX=0; GS.Saved.executeY=-110; self:ApplyLayout() end, width="half" },
+
         { type="header", name="GCD Metronome", width="full" },
         { type="checkbox", name="Show GCD Metronome", getFunc=function() return GS.Saved.showGCD end, setFunc=function(v) GS.Saved.showGCD=v; self:UpdateGCD() end, default=GS.SV.showGCD },
         { type="slider", name="Horizontal Position (X)", min=0, max=3840, step=1, getFunc=function() return GS.Saved.gcdX end, setFunc=function(v) GS.Saved.gcdX=v; self:ApplyLayout() end, default=GS.SV.gcdX, width="full" },
@@ -1339,6 +1511,15 @@ function Combat:SetSettingsPreviewVisible(visible)
 
         self:UpdateGCD()
         self:UpdateWeave()
+        if self.executeFrame then
+            if self.layoutUnlocked then
+                self.executeLabel:SetText("100.0%")
+                self.executeLabel:SetColor(1, 1, 1, 1)
+                self.executeFrame:SetHidden(false)
+            else
+                self.executeFrame:SetHidden(true)
+            end
+        end
     else
         if self.gcdFrame then
             self.gcdFrame:SetHidden(not (self.hudVisible and GS.Saved.showGCD))
@@ -1351,6 +1532,8 @@ function Combat:SetSettingsPreviewVisible(visible)
         if self.weaveAverageFrame then
             self.weaveAverageFrame:SetHidden(not (self.hudVisible and GS.Saved.showWeave))
         end
+
+        self:UpdateExecuteDisplay()
     end
 end
 
@@ -1358,6 +1541,7 @@ function Combat:Initialize()
     self:CreateAttributes()
     self:CreateGCD()
     self:CreateWeaveBar()
+    self:CreateExecuteDisplay()
     self:CreateSettings()
 
     if CALLBACK_MANAGER and not self.settingsPreviewCallbacksRegistered then
@@ -1379,6 +1563,12 @@ function Combat:Initialize()
     EM:RegisterForEvent(GS.name .. "_CombatState", EVENT_PLAYER_COMBAT_STATE, function(...)
         self:OnCombatState(...)
     end)
+
+    if EVENT_RETICLE_TARGET_CHANGED then
+        EM:RegisterForEvent(GS.name .. "_ExecuteTargetChanged", EVENT_RETICLE_TARGET_CHANGED, function()
+            self:UpdateExecuteDisplay()
+        end)
+    end
 
     -- Hide GrimSuite's custom HUD widgets whenever ESO enters a menu scene.
     -- They are HUD-only: ESC, inventory, map, skills, character sheet, etc.

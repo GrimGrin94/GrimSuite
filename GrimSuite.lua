@@ -21,6 +21,9 @@ GS.SV = {
     weaveAverageY = 7,
     attributesX = 0,
     attributesY = 375,
+    showExecute = true,
+    executeX = 0,
+    executeY = -110,
 }
 
 local function LoadSavedVars()
